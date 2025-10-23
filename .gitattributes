@@ -1,0 +1,5 @@
+﻿# Нормализуем переводы строк для текста
+* text=auto eol=lf
+# Excel в LFS (бинарники)
+*.xlsx filter=lfs diff=lfs merge=lfs -text
+*.xls  filter=lfs diff=lfs merge=lfs -text
