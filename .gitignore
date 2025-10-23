@@ -1,0 +1,25 @@
+﻿# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Env / локальные конфиги
+.env
+.env.*
+*.local
+
+# VS Code
+.vscode/settings.json
+.vscode/*.json.lock
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data кеши/временные
+data/_cache/
+data/_tmp/
+
+# Excel archive и кеши
+data/excel/**/_archive/
+data/_cache/
