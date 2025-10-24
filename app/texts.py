@@ -103,6 +103,8 @@ def status_line_metered(
     True
     >>> "▱" in status_line_metered("20", left=0, expires_date="24.11")
     True
+    >>> "Действует до:" in status_line_metered("20", left=13, expires_date="24.11", total=20)
+    True
     """
 
     left = max(0, int(left))
@@ -114,14 +116,29 @@ def status_line_metered(
         bar = progress_bar(used, total, bar_blocks)
     else:
         bar = _heuristic_metered_bar(left, bar_blocks)
-    return f"Подписка: {plan_title} • Осталось: {left} • До: {expires_date}\n{bar}"
+    return f"Подписка: {plan_title} • Осталось: {left} • Действует до: {expires_date}\n{bar}"
 
 
 def status_line_unlim(today_used: int, cap: int, expires_date: str, bar_blocks: int = 5) -> str:
-    """Return the status line for unlimited plans with a progress bar."""
+    """
+    Return the status line for unlimited plans with a progress bar.
 
-    bar = progress_bar(today_used, cap, bar_blocks)
-    return f"Безлимит: до {cap}/сутки • Сегодня: {today_used}/{cap} • До: {expires_date}\n{bar}"
+    >>> s = status_line_unlim(today_used=10, cap=50, expires_date="24.11")
+    >>> "до 50/сутки" in s and "Действует до: 24.11" in s
+    True
+    >>> s2 = status_line_unlim(today_used=10, cap=0, expires_date="24.11")
+    >>> "0/сутки" in s2  # не должно быть
+    False
+    """
+
+    safe_today = max(0, today_used)
+    if cap and cap > 0:
+        bar = progress_bar(safe_today, cap, bar_blocks)
+        return (
+            f"Безлимит: до {cap}/сутки • Сегодня: {safe_today}/{cap} • Действует до: {expires_date}\n{bar}"
+        )
+    bar = progress_bar(safe_today, 1, bar_blocks)
+    return f"Безлимит • Сегодня: {safe_today} • Действует до: {expires_date}\n{bar}"
 
 
 def fmt_rub(amount: int) -> str:
@@ -440,13 +457,19 @@ def help_main() -> str:
 
 
 def faq_text() -> str:
-    """Return the FAQ text."""
+    """
+    Return the FAQ text.
+
+    >>> t = faq_text()
+    >>> "(" in t and ")" in t  # в тексте должен быть скобочный TZ из cfg.tz
+    True
+    """
 
     qa_items = [
         "Как сделать проверку? — Пришлите код АТИ (3–7 цифр) в чат, и мы сразу дадим отчёт.",
         "Что делать, если проверок не осталось? — Выберите и оплатите план. Всё занимает минуту.",
         "Как работают бесплатные проверки? — Новым пользователям выдаётся 5 проверок на 3 дня.",
-        "Как работает безлимит? — До 50 проверок в сутки, счётчик обнуляется в 00:00 (МСК).",
+        f"Как работает безлимит? — До 50 проверок в сутки, счётчик обнуляется в 00:00 ({cfg.tz}).",
         "Как оплатить из баланса? — Это возможно только в разделе «Пригласить и заработать».",
         "Как изменить код АТИ компании? — Профиль → Настройки.",
     ]
@@ -515,11 +538,19 @@ def profile_overview_metered(plan_title: str, left: int, expires_date: str) -> s
 
 
 def profile_overview_unlim(today_used: int, cap: int, expires_date: str) -> str:
-    """Return the profile overview for unlimited plans."""
+    """
+    Return the profile overview for unlimited plans.
 
+    >>> "Действует до:" in profile_overview_unlim(today_used=5, cap=50, expires_date="24.11")
+    True
+    """
+
+    cap_suffix = f" (до {cap}/сутки)" if cap and cap > 0 else ""
+    today_denominator = f"/{cap}" if cap and cap > 0 else ""
+    safe_today = max(0, today_used)
     return (
-        f"Подписка: Безлимит (до {cap}/сутки)\n"
-        f"Сегодня: {today_used}/{cap}\n"
+        f"Подписка: Безлимит{cap_suffix}\n"
+        f"Сегодня: {safe_today}{today_denominator}\n"
         f"Действует до: {expires_date}"
     )
 
