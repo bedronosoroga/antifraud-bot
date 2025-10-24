@@ -27,6 +27,24 @@ def progress_bar(current: int, total: int, blocks: int = 5) -> str:
     return _FILLED_BLOCK * filled_blocks + _EMPTY_BLOCK * (blocks - filled_blocks)
 
 
+def fmt_percent(numerator: int, denominator: int) -> str:
+    """
+    Возвращает '0%'..'100%'. Деление с защитой от 0, округление до целых.
+    Примеры:
+    >>> fmt_percent(0, 20)
+    '0%'
+    >>> fmt_percent(3, 20)
+    '15%'
+    >>> fmt_percent(20, 20)
+    '100%'
+    """
+
+    safe_denominator = max(denominator, 1)
+    pct = round(max(0, numerator) * 100 / safe_denominator)
+    pct = max(0, min(100, pct))
+    return f"{pct}%"
+
+
 def hint_send_code() -> str:
     """Return the main screen prompt."""
 
@@ -55,6 +73,8 @@ def unlim_cap_reached() -> str:
 
 def _heuristic_metered_bar(left: int, blocks: int) -> str:
     """
+    DEPRECATED: не использовать. Каноничная визуализация — только по used/total.
+
     Рисуем бар по остаточному принципу.
 
     >>> _heuristic_metered_bar(0, 5)
@@ -89,6 +109,48 @@ def _plural(n: int, forms: tuple[str, str, str]) -> str:
     return forms[2]
 
 
+def status_line_metered_exact(
+    plan_title: str,
+    used: int,
+    total: int,
+    expires_date: str,
+    bar_blocks: int = 5,
+) -> str:
+    """
+    Каноничная версия статуса для пакетных планов на основе used/total.
+
+    >>> s = status_line_metered_exact("50", used=10, total=50, expires_date="24.11")
+    >>> "Осталось: 40/50" in s and "(" in s and "%)" in s
+    True
+    """
+
+    total_int = int(total)
+    used_int = int(used)
+
+    total_clamped = max(total_int, 1)
+    used_upper_bound = total_int if total_int > 0 else 1
+    used_clamped = min(max(used_int, 0), used_upper_bound)
+
+    left_raw = total_int - used_int
+    left = max(0, left_raw)
+    if total_int > 0:
+        left = min(left, total_int)
+    else:
+        left = 0
+
+    left_for_percent = max(0, total_clamped - used_clamped)
+    pct_left = fmt_percent(left_for_percent, total_clamped)
+    bar = progress_bar(used_clamped, total_clamped, bar_blocks)
+
+    total_display = max(total_int, 0)
+    left_display = left if total_display > 0 else 0
+
+    return (
+        "Подписка: "
+        f"{plan_title} • Осталось: {left_display}/{total_display} ({pct_left}) • Действует до: {expires_date}\n{bar}"
+    )
+
+
 def status_line_metered(
     plan_title: str,
     left: int,
@@ -97,45 +159,53 @@ def status_line_metered(
     total: int | None = None,
 ) -> str:
     """
-    Return the status line for metered plans with a progress bar.
-
-    >>> "▰" in status_line_metered("20", left=15, expires_date="24.11", total=20)
-    True
-    >>> "▱" in status_line_metered("20", left=0, expires_date="24.11")
-    True
-    >>> "Действует до:" in status_line_metered("20", left=13, expires_date="24.11", total=20)
-    True
+    DEPRECATED: используйте status_line_metered_exact(..., used, total, ...).
+    Если total передан: считаем used = max(0, total - left) и делегируем в status_line_metered_exact.
+    Если total не передан: делаем безопасный фоллбэк — считаем total=left, used=0 (весь объём впереди),
+    бар и проценты будут корректны (100% осталось), без эвристик.
     """
 
-    left = max(0, int(left))
-    bar: str
-    if total and total > 0:
-        total = int(total)
-        remaining = min(left, total)
-        used = max(0, total - remaining)
-        bar = progress_bar(used, total, bar_blocks)
-    else:
-        bar = _heuristic_metered_bar(left, bar_blocks)
-    return f"Подписка: {plan_title} • Осталось: {left} • Действует до: {expires_date}\n{bar}"
+    left_int = max(0, int(left))
+    if total is not None:
+        total_int = int(total)
+        used = max(0, total_int - left_int)
+        return status_line_metered_exact(
+            plan_title=plan_title,
+            used=used,
+            total=total_int,
+            expires_date=expires_date,
+            bar_blocks=bar_blocks,
+        )
+
+    total_int = left_int
+    return status_line_metered_exact(
+        plan_title=plan_title,
+        used=0,
+        total=total_int,
+        expires_date=expires_date,
+        bar_blocks=bar_blocks,
+    )
 
 
 def status_line_unlim(today_used: int, cap: int, expires_date: str, bar_blocks: int = 5) -> str:
     """
-    Return the status line for unlimited plans with a progress bar.
-
-    >>> s = status_line_unlim(today_used=10, cap=50, expires_date="24.11")
-    >>> "до 50/сутки" in s and "Действует до: 24.11" in s
+    >>> a = status_line_unlim(10, 50, "24.11")
+    >>> "Сегодня: 10/50 (20%)" in a
     True
-    >>> s2 = status_line_unlim(today_used=10, cap=0, expires_date="24.11")
-    >>> "0/сутки" in s2  # не должно быть
+    >>> b = status_line_unlim(10, 0, "24.11")
+    >>> "0/сутки" in b
     False
     """
 
     safe_today = max(0, today_used)
     if cap and cap > 0:
-        bar = progress_bar(safe_today, cap, bar_blocks)
+        cap_int = int(cap)
+        today_clamped = min(safe_today, cap_int)
+        bar = progress_bar(today_clamped, cap_int, bar_blocks)
+        pct = fmt_percent(safe_today, cap_int)
         return (
-            f"Безлимит: до {cap}/сутки • Сегодня: {safe_today}/{cap} • Действует до: {expires_date}\n{bar}"
+            "Безлимит: "
+            f"до {cap_int}/сутки • Сегодня: {safe_today}/{cap_int} ({pct}) • Действует до: {expires_date}\n{bar}"
         )
     bar = progress_bar(safe_today, 1, bar_blocks)
     return f"Безлимит • Сегодня: {safe_today} • Действует до: {expires_date}\n{bar}"
@@ -531,10 +601,66 @@ def unlim_cap_hit_today(cap: int) -> str:
     return f"Лимит {cap}/сутки достигнут. Можно снова завтра после 00:00."
 
 
-def profile_overview_metered(plan_title: str, left: int, expires_date: str) -> str:
-    """Return the profile overview for metered plans."""
+def profile_overview_metered_exact(plan_title: str, used: int, total: int, expires_date: str) -> str:
+    """
+    >>> s = profile_overview_metered_exact("20", used=5, total=20, expires_date="24.11")
+    >>> "Осталось: 15/20" in s and "%" in s
+    True
+    """
 
-    return f"Подписка: {plan_title}\nОсталось: {left}\nДействует до: {expires_date}"
+    total_int = int(total)
+    used_int = int(used)
+
+    total_clamped = max(total_int, 1)
+    used_clamped = min(max(used_int, 0), total_int if total_int > 0 else 1)
+    left_raw = total_int - used_int
+    left = max(0, left_raw)
+    if total_int > 0:
+        left = min(left, total_int)
+    else:
+        left = 0
+
+    left_for_percent = max(0, total_clamped - used_clamped)
+    total_display = max(total_int, 0)
+    left_display = left if total_display > 0 else 0
+    pct_left = fmt_percent(left_for_percent, total_clamped)
+
+    return (
+        "Подписка: "
+        f"{plan_title}\nОсталось: {left_display}/{total_display} ({pct_left})\nДействует до: {expires_date}"
+    )
+
+
+def profile_overview_metered(
+    plan_title: str,
+    left: int,
+    expires_date: str,
+    total: int | None = None,
+) -> str:
+    """
+    DEPRECATED: используйте profile_overview_metered_exact(..., used, total, ...).
+    Если total передан: used = max(0, total - left) и делегируем.
+    Если total не передан: total=left, used=0 (весь объём впереди).
+    """
+
+    left_int = max(0, int(left))
+    if total is not None:
+        total_int = int(total)
+        used = max(0, total_int - left_int)
+        return profile_overview_metered_exact(
+            plan_title=plan_title,
+            used=used,
+            total=total_int,
+            expires_date=expires_date,
+        )
+
+    total_int = left_int
+    return profile_overview_metered_exact(
+        plan_title=plan_title,
+        used=0,
+        total=total_int,
+        expires_date=expires_date,
+    )
 
 
 def profile_overview_unlim(today_used: int, cap: int, expires_date: str) -> str:
@@ -647,9 +773,11 @@ def wallet_only_in_referral_notice() -> str:
 
 __all__ = [
     "progress_bar",
+    "fmt_percent",
     "hint_send_code",
     "history_empty",
     "unlim_cap_reached",
+    "status_line_metered_exact",
     "status_line_metered",
     "status_line_unlim",
     "fmt_rub",
@@ -720,6 +848,7 @@ __all__ = [
     "inactive_with_active_subscription",
     "winback_no_activity",
     "unlim_cap_hit_today",
+    "profile_overview_metered_exact",
     "profile_overview_metered",
     "profile_overview_unlim",
     "settings_menu",
