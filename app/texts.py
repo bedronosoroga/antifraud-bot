@@ -40,59 +40,77 @@ def history_empty() -> str:
 
 
 def unlim_cap_reached() -> str:
-    """Return a message for reaching the unlimited plan daily cap."""
+    """
+    Return a message for reaching the unlimited plan daily cap.
 
-    cap = cfg.plans["unlim"].daily_cap or 0
-    return f"Дневной лимит {cap}/сутки достигнут. Можно снова завтра после 00:00."
+    >>> isinstance(unlim_cap_reached(), str)
+    True
+    """
 
-
-def _guess_total_checks(plan_title: str) -> int | None:
-    """Try to guess total checks in the plan by title."""
-
-    for plan in cfg.plans.values():
-        if plan.is_unlimited:
-            continue
-        if plan.title == plan_title and plan.checks_in_pack:
-            return plan.checks_in_pack
-    digits = "".join(ch for ch in plan_title if ch.isdigit())
-    if digits:
-        try:
-            value = int(digits)
-            if value > 0:
-                return value
-        except ValueError:
-            return None
-    return None
+    cap = getattr(cfg.plans.get("unlim", None), "daily_cap", None)
+    if cap:
+        return f"Дневной лимит {cap}/сутки достигнут. Можно снова завтра после 00:00."
+    return "Дневной лимит на сегодня достигнут. Можно снова завтра после 00:00."
 
 
 def _heuristic_metered_bar(left: int, blocks: int) -> str:
-    """Build a fallback bar when total checks are unknown."""
+    """
+    Рисуем бар по остаточному принципу.
 
+    >>> _heuristic_metered_bar(0, 5)
+    '▱▱▱▱▱'
+    >>> _heuristic_metered_bar(100, 5)
+    '▰▰▰▰▰'
+    """
+
+    blocks = max(1, blocks)
     if left <= 0:
         filled = 0
     else:
-        percent_left = max(0, min(left, 100))
-        if percent_left > 75:
-            filled = 1
-        elif percent_left > 50:
-            filled = 2
-        elif percent_left > 25:
-            filled = 3
-        elif percent_left > 10:
-            filled = blocks - 1 if blocks > 1 else 1
-        else:
-            filled = blocks
-    filled = max(0, min(filled, blocks))
+        pct = max(0, min(left, 100)) / 100.0
+        filled = max(1, min(blocks, int(round(pct * blocks))))
     return _FILLED_BLOCK * filled + _EMPTY_BLOCK * (blocks - filled)
 
 
-def status_line_metered(plan_title: str, left: int, expires_date: str, bar_blocks: int = 5) -> str:
-    """Return the status line for metered plans with a progress bar."""
+def _plural(n: int, forms: tuple[str, str, str]) -> str:
+    """
+    Русские склонения по числу.
+    forms = ("секунду", "секунды", "секунд") / ("день", "дня", "дней")
+    """
 
-    total = _guess_total_checks(plan_title)
+    n = abs(int(n)) % 100
+    n1 = n % 10
+    if 11 <= n <= 19:
+        return forms[2]
+    if n1 == 1:
+        return forms[0]
+    if 2 <= n1 <= 4:
+        return forms[1]
+    return forms[2]
+
+
+def status_line_metered(
+    plan_title: str,
+    left: int,
+    expires_date: str,
+    bar_blocks: int = 5,
+    total: int | None = None,
+) -> str:
+    """
+    Return the status line for metered plans with a progress bar.
+
+    >>> "▰" in status_line_metered("20", left=15, expires_date="24.11", total=20)
+    True
+    >>> "▱" in status_line_metered("20", left=0, expires_date="24.11")
+    True
+    """
+
+    left = max(0, int(left))
+    bar: str
     if total and total > 0:
-        remaining = max(0, min(left, total))
-        used = total - remaining
+        total = int(total)
+        remaining = min(left, total)
+        used = max(0, total - remaining)
         bar = progress_bar(used, total, bar_blocks)
     else:
         bar = _heuristic_metered_bar(left, bar_blocks)
@@ -292,6 +310,7 @@ BTN_BUY_P50 = "Купить 50"
 BTN_BUY_UNLIM = "Купить Безлимит"
 
 BTN_SUPPORT = "Написать нам"
+BTN_PAY_SUPPORT = "В поддержку"
 BTN_REPEAT_PAYMENT = "Повторить оплату"
 BTN_CHOOSE_ANOTHER_PLAN = "Выбрать другой план"
 
@@ -299,7 +318,8 @@ BTN_MY_REF_LINK = "Моя ссылка"
 BTN_HOW_IT_WORKS = "Как это работает"
 
 BTN_BACK = "Назад"
-BTN_MENU = "В меню"
+# алиас для обратной совместимости
+BTN_MENU = ACTION_BTN_MENU
 BTN_MORE = "Дальше"
 
 BTN_REF_COPY = "Скопировать"
@@ -384,9 +404,9 @@ def ref_levels_table() -> str:
 
 
 def ref_balance_only_here_notice() -> str:
-    """Return the notice about wallet payments being referral-only."""
+    """Алиас для notice об оплате из баланса в реферальном разделе."""
 
-    return "Оплата из баланса доступна только в этом разделе."
+    return wallet_only_in_referral_notice()
 
 
 def history_header() -> str:
@@ -466,13 +486,20 @@ def payment_abandoned() -> str:
 def inactive_with_active_subscription(days: int) -> str:
     """Return a reminder about inactivity with an active subscription."""
 
-    return f"У вас активная подписка, но {days} дн. без проверок. Пришлите код — проверим."
+    return (
+        "У вас активная подписка, но "
+        f"{days} {_plural(days, ('день', 'дня', 'дней'))} без проверок. Пришлите код — проверим."
+    )
 
 
 def winback_no_activity(days: int) -> str:
     """Return a winback message when there is no activity."""
 
-    return f"Давно не заходили ({days} дн.). Напомнить планы?\n{plans_list()}"
+    head = (
+        "Давно не заходили ("
+        f"{days} {_plural(days, ('день', 'дня', 'дней'))}). Напомнить планы?"
+    )
+    return head + "\n" + plans_list()
 
 
 def unlim_cap_hit_today(cap: int) -> str:
@@ -556,9 +583,17 @@ def too_many_requests() -> str:
 
 
 def throttle_msg(seconds: int) -> str:
-    """Return a throttling message with seconds to wait."""
+    """
+    Return a throttling message with seconds to wait.
 
-    return f"Подождите {seconds} сек. перед следующей проверкой."
+    >>> throttle_msg(1).startswith("Подождите 1")
+    True
+    """
+
+    return (
+        "Подождите "
+        f"{seconds} {_plural(seconds, ('секунду', 'секунды', 'секунд'))} перед следующей проверкой."
+    )
 
 
 def payment_failed_try_again() -> str:
@@ -612,6 +647,7 @@ __all__ = [
     "BTN_BUY_P50",
     "BTN_BUY_UNLIM",
     "BTN_SUPPORT",
+    "BTN_PAY_SUPPORT",
     "BTN_REPEAT_PAYMENT",
     "BTN_CHOOSE_ANOTHER_PLAN",
     "BTN_MY_REF_LINK",
