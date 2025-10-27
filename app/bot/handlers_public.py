@@ -32,11 +32,11 @@ class CompanyATIStates(StatesGroup):
     waiting_code = State()
 
 
-def _is_digits_3_7(text: str) -> bool:
-    """Return True if text consists of 3-7 digits."""
+def _is_digits_1_7(text: str) -> bool:
+    """Return True if text consists of 1-7 digits."""
 
     t = (text or "").strip()
-    return t.isdigit() and 3 <= len(t) <= 7
+    return t.isdigit() and 1 <= len(t) <= 7
 
 
 @public_router.message(CommandStart())
@@ -269,7 +269,7 @@ async def on_ref_how(query: CallbackQuery) -> None:
 
 @public_router.callback_query(F.data == "ati:set")
 async def on_company_ati_set(query: CallbackQuery, state: FSMContext) -> None:
-    """ati:set → просим отправить код АТИ (3–7 цифр)."""
+    """ati:set → просим отправить код АТИ (до 7 цифр)."""
 
     await query.answer()
     await state.set_state(CompanyATIStates.waiting_code)
@@ -299,15 +299,15 @@ async def on_company_ati_change(query: CallbackQuery, state: FSMContext) -> None
 
     await query.answer()
     await state.set_state(CompanyATIStates.waiting_code)
-    await query.message.edit_text("Укажите новый код АТИ (3–7 цифр).", reply_markup=kb_company_ati_ask())
+    await query.message.edit_text("Укажите новый код АТИ (до 7 цифр).", reply_markup=kb_company_ati_ask())
 
 
 @public_router.message(CompanyATIStates.waiting_code)
 async def on_company_ati_code_input(message: Message, state: FSMContext) -> None:
-    """FSM: ждём код 3–7 цифр, валидируем и сохраняем."""
+    """FSM: ждём код до 7 цифр, валидируем и сохраняем."""
 
     code = (message.text or "").strip()
-    if not _is_digits_3_7(code):
+    if not _is_digits_1_7(code):
         await message.answer(err_need_digits_3_7())
         return
     await state.update_data(company_ati_code=code)
@@ -331,7 +331,7 @@ async def on_profile(query: CallbackQuery) -> None:
     await query.message.edit_text("Профиль", reply_markup=kb_profile())
 
 
-@public_router.message()
+@public_router.message(F.text & ~F.text.regexp(r"^\d{1,7}$"))
 async def on_any_text(message: Message) -> None:
     """Любой текст → подсказка и главное меню."""
 
