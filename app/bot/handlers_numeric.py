@@ -30,9 +30,10 @@ def init_checks_runtime(checker: CheckerService, lin_ok: int = 2, exp_ok: int = 
     _runtime.exp_ok = int(exp_ok)
 
 
-def _not_ready_reply(message: Message) -> None:
+async def _not_ready_reply(message: Message) -> None:
+    """Отправляет пользователю сообщение о недоступности сервиса."""
     # Используем простую подсказку и клавиатуру меню
-    return message.answer(
+    await message.answer(
         "Сервис проверок сейчас недоступен. Попробуйте чуть позже.",
         reply_markup=kb_main(),
     )
