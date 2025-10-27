@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+from datetime import datetime
+
 from aiogram import Router, F
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery
 
+from app.domain.onboarding.free import FreeService
 from app.texts import (
     hint_send_code, err_need_digits_3_7,
     plans_list,
@@ -26,6 +30,21 @@ from app.keyboards import (
 public_router = Router(name="public")
 
 
+class _OnboardingRuntime:
+    free: FreeService | None = None
+
+
+_onb = _OnboardingRuntime()
+
+
+def init_onboarding_runtime(*, free: FreeService | None) -> None:
+    """
+    Вызывается из main при сборке зависимостей, чтобы /start мог выдать пакет.
+    """
+
+    _onb.free = free
+
+
 class CompanyATIStates(StatesGroup):
     """FSM states for collecting company ATI code."""
 
@@ -42,6 +61,14 @@ def _is_digits_1_7(text: str) -> bool:
 @public_router.message(CommandStart())
 async def on_start(message: Message, state: FSMContext) -> None:
     """/start → показать подсказку и главное меню."""
+
+    try:
+        if _onb.free is not None:
+            from_user = message.from_user
+            if from_user is not None:
+                _onb.free.ensure_pack(from_user.id, datetime.now())
+    except Exception:
+        logging.exception("ensure_pack failed")
 
     await state.clear()
     await message.answer(hint_send_code())

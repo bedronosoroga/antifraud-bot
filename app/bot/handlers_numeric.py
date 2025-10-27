@@ -119,7 +119,7 @@ async def on_ati_code(message: Message) -> None:
     now = datetime.now()
     cons = _resolve_and_consume(user_id=from_user.id, now=now)
     if not cons.allowed:
-        await message.answer(texts.paywall_no_checks())
+        await message.answer(texts.paywall_no_checks(), reply_markup=kb_main())
         return
 
     try:
