@@ -6,11 +6,24 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-__all__ = ["AppPaths", "SubscriptionPlan", "Cfg", "load_config", "cfg"]
+__all__ = [
+    "AppPaths",
+    "SubscriptionPlan",
+    "Cfg",
+    "PostgresCfg",
+    "PG",
+    "RUN_MIGRATIONS",
+    "DEV_CREATE_ALL",
+    "load_config",
+    "cfg",
+]
 
 _DEFAULT_BASE_DIR = Path(__file__).resolve().parents[1]
 _TRUTHY_BOOL_VALUES = {"1", "true", "yes", "on"}
 _FALSY_BOOL_VALUES = {"0", "false", "no", "off"}
+
+
+load_dotenv()
 
 
 def env_str(name: str, default: str | None = None) -> str | None:
@@ -122,6 +135,24 @@ class Cfg:
     free_ttl_hours: int
     ref_hold_days: int
     allow_wallet_purchases_only_in_referrals: bool
+
+
+@dataclass(frozen=True)
+class PostgresCfg:
+    """PostgreSQL connection configuration."""
+
+    url: str
+
+
+PG = PostgresCfg(
+    url=os.getenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://antifraud:ANTIFRAUD_PASSWORD@127.0.0.1:5433/antifraud",
+    )
+)
+
+RUN_MIGRATIONS = os.getenv("RUN_MIGRATIONS", "1") == "1"
+DEV_CREATE_ALL = os.getenv("DEV_CREATE_ALL", "0") == "1"
 
 
 def load_config() -> Cfg:
