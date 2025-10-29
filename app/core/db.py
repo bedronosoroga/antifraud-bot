@@ -607,6 +607,25 @@ async def mark_payment_status(uid: int, payment_id: str, *, status: str) -> None
             raise ValueError("pending payment not found")
 
 
+async def get_payment(payment_id: str) -> Optional[dict[str, Any]]:
+    async with Session() as session:
+        result = await session.execute(select(pending_payments).where(pending_payments.c.id == payment_id))
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+
+async def count_confirmed_payments(uid: int) -> int:
+    stmt = (
+        select(func.count())
+        .select_from(pending_payments)
+        .where(pending_payments.c.uid == uid)
+        .where(pending_payments.c.status == "confirmed")
+    )
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return int(result.scalar_one())
+
+
 async def ensure_ref(uid: int, referred_by: Optional[int] = None) -> dict[str, Any]:
     if referred_by is not None and referred_by == uid:
         raise ValueError("user cannot refer themselves")
