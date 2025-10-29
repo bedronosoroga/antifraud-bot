@@ -16,6 +16,8 @@ __all__ = [
     "DEV_CREATE_ALL",
     "PLANS",
     "FREE",
+    "REF_TIERS",
+    "REF_WITHDRAW_MIN_KOP",
     "load_config",
     "cfg",
 ]
@@ -272,6 +274,16 @@ FREE: dict[str, int] = {
     "total": cfg.free_count,
     "ttl_hours": cfg.free_ttl_hours,
 }
+
+REF_TIERS: list[dict[str, int]] = [
+    {"min_paid": 0, "percent": 10},
+    {"min_paid": 3, "percent": 20},
+    {"min_paid": 10, "percent": 30},
+    {"min_paid": 25, "percent": 40},
+    {"min_paid": 50, "percent": 50},
+]
+
+REF_WITHDRAW_MIN_KOP: int = 500_00
 
 # Example usage:
 # from app.config import cfg

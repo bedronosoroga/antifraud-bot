@@ -625,6 +625,7 @@ async def ensure_ref(uid: int, referred_by: Optional[int] = None) -> dict[str, A
             await session.execute(
                 update(referrals)
                 .where(referrals.c.uid == uid)
+                .where((referrals.c.referred_by.is_(None)))
                 .values(referred_by=referred_by, updated_at=now_utc())
             )
         result = await session.execute(select(referrals).where(referrals.c.uid == uid))
