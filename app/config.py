@@ -14,6 +14,7 @@ __all__ = [
     "PG",
     "RUN_MIGRATIONS",
     "DEV_CREATE_ALL",
+    "PLANS",
     "load_config",
     "cfg",
 ]
@@ -250,6 +251,21 @@ def load_config() -> Cfg:
 
 
 cfg = load_config()
+
+PLANS: dict[str, dict[str, int]] = {
+    "p20": {
+        "checks_total": cfg.plans["p20"].checks_in_pack or 0,
+        "price_kop": cfg.plans["p20"].price_rub * 100,
+    },
+    "p50": {
+        "checks_total": cfg.plans["p50"].checks_in_pack or 0,
+        "price_kop": cfg.plans["p50"].price_rub * 100,
+    },
+    "unlim": {
+        "day_cap": cfg.plans["unlim"].daily_cap or 0,
+        "price_kop": cfg.plans["unlim"].price_rub * 100,
+    },
+}
 
 # Example usage:
 # from app.config import cfg

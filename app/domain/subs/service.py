@@ -1,200 +1,176 @@
 from __future__ import annotations
 
-"""Subscription service providing pure business logic for subscription handling."""
+import time
+from datetime import datetime, timezone
+from typing import Literal, Optional, TypedDict
 
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from typing import Literal, Optional, Protocol
+from app.config import PLANS
+from app.core import db as dal
 
-
-PlanCode = Literal["p20", "p50", "unlim"]
-
-
-@dataclass(frozen=True)
-class PlanTerms:
-    """Terms for a subscription plan."""
-
-    code: PlanCode
-    period_days: int
-    included_per_period: int
-    daily_cap: Optional[int]
+PlanName = Literal["p20", "p50", "unlim"]
 
 
-PLANS: dict[PlanCode, PlanTerms] = {
-    "p20": PlanTerms("p20", period_days=30, included_per_period=20, daily_cap=None),
-    "p50": PlanTerms("p50", period_days=30, included_per_period=50, daily_cap=None),
-    "unlim": PlanTerms("unlim", period_days=30, included_per_period=0, daily_cap=50),
-}
+class SubInfo(TypedDict, total=False):
+    plan: str
+    started_at_ts: Optional[float]
+    expires_at_ts: Optional[float]
+    checks_left: Optional[int]
+    day_cap_left: Optional[int]
+    last_day_reset: Optional[str]
+    is_active: bool
+    is_unlimited: bool
+    unlimited_override: bool
+    days_left: Optional[int]
 
 
-class SubsRepo(Protocol):
-    """Protocol describing the storage of user subscriptions."""
-
-    def get_latest_subscription(self, user_id: int) -> Subscription | None:
-        """Return the latest subscription for the user or ``None`` if absent."""
-
-    def add_subscription(
-        self,
-        user_id: int,
-        plan: PlanCode,
-        purchased_at: datetime,
-        starts_at: datetime,
-        ends_at: datetime,
-    ) -> Subscription:
-        """Persist a subscription purchase and return the stored entity."""
+class CanConsumeResult(TypedDict):
+    ok: bool
+    mode: Literal["none", "quota", "unlim", "override"]
+    reason: Optional[str]
 
 
-class UsageRepo(Protocol):
-    """Protocol describing usage accounting for subscriptions."""
-
-    def count_used_since(self, user_id: int, since: datetime) -> int:
-        """Count how many checks were used since the given moment."""
-
-    def count_used_on_date(self, user_id: int, on: date) -> int:
-        """Count how many checks were used on a particular date."""
-
-    def add_usage(self, user_id: int, at: datetime) -> None:
-        """Record that a single check was consumed at the given moment."""
+def utc_now_ts() -> float:
+    return time.time()
 
 
-@dataclass(frozen=True)
-class Subscription:
-    """Concrete subscription purchase entry."""
-
-    user_id: int
-    plan: PlanCode
-    purchased_at: datetime
-    starts_at: datetime
-    ends_at: datetime
+def to_date_utc(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
 
 
-@dataclass(frozen=True)
-class SubsStatus:
-    """Aggregated status information for UI handlers."""
+async def get_status(uid: int, *, now_ts: Optional[float] = None) -> SubInfo:
+    ts = now_ts if now_ts is not None else utc_now_ts()
+    sub = await dal.get_sub(uid)
+    override = await dal.get_unlimited_override(uid)
 
-    user_id: int
-    plan: PlanCode | None
-    period_start: Optional[datetime]
-    period_end: Optional[datetime]
-    used: Optional[int]
-    total: Optional[int]
-    daily_used: Optional[int]
-    daily_cap: Optional[int]
-    can_consume: bool
-    reason: str | None
+    plan = sub["plan"] if sub and sub.get("plan") else "none"
+    started_at = sub.get("started_at") if sub else None
+    expires_at = sub.get("expires_at") if sub else None
+    checks_left = sub.get("checks_left") if sub else None
+    day_cap_left = sub.get("day_cap_left") if sub else None
+    last_day_reset_value = sub.get("last_day_reset") if sub else None
+
+    started_at_ts = started_at.timestamp() if isinstance(started_at, datetime) else None
+    expires_at_ts = expires_at.timestamp() if isinstance(expires_at, datetime) else None
+    last_day_reset = last_day_reset_value.isoformat() if last_day_reset_value else None
+
+    is_active = bool(expires_at_ts is not None and expires_at_ts > ts)
+    is_unlimited = bool(override or (plan == "unlim" and is_active))
+
+    info: SubInfo = {
+        "plan": plan,
+        "started_at_ts": started_at_ts,
+        "expires_at_ts": expires_at_ts,
+        "checks_left": checks_left,
+        "day_cap_left": day_cap_left,
+        "last_day_reset": last_day_reset,
+        "is_active": is_active,
+        "is_unlimited": is_unlimited,
+        "unlimited_override": override,
+        "days_left": None,
+    }
+
+    if expires_at_ts is not None:
+        delta_days = int((expires_at_ts - ts) // 86400)
+        info["days_left"] = max(delta_days, 0)
+
+    return info
 
 
-class SubsService:
-    """Pure business logic service for handling subscription operations."""
+async def purchase(uid: int, plan: PlanName, *, paid_at_ts: Optional[float] = None) -> None:
+    if plan not in PLANS:
+        raise ValueError(f"unknown plan '{plan}'")
 
-    def __init__(self, subs_repo: SubsRepo, usage_repo: UsageRepo) -> None:
-        """Initialize the service with required repositories."""
+    start_ts = paid_at_ts if paid_at_ts is not None else utc_now_ts()
 
-        self._subs_repo = subs_repo
-        self._usage_repo = usage_repo
-
-    def current(self, user_id: int, now: datetime) -> Subscription | None:
-        """Return the active subscription for ``user_id`` at ``now`` if available."""
-
-        latest = self._subs_repo.get_latest_subscription(user_id)
-        if latest is None:
-            return None
-        if latest.starts_at <= now < latest.ends_at:
-            return latest
-        return None
-
-    def get_status(self, user_id: int, now: datetime) -> SubsStatus:
-        """Return subscription status for the given user and moment."""
-
-        subscription = self.current(user_id, now)
-        if subscription is None:
-            return SubsStatus(
-                user_id=user_id,
-                plan=None,
-                period_start=None,
-                period_end=None,
-                used=None,
-                total=None,
-                daily_used=None,
-                daily_cap=None,
-                can_consume=False,
-                reason="нет активной подписки",
-            )
-
-        terms = PLANS[subscription.plan]
-        if terms.daily_cap is None:
-            used = self._usage_repo.count_used_since(user_id, subscription.starts_at)
-            total = terms.included_per_period
-            can_consume = used < total
-            reason = None if can_consume else "закончились проверки"
-            return SubsStatus(
-                user_id=user_id,
-                plan=subscription.plan,
-                period_start=subscription.starts_at,
-                period_end=subscription.ends_at,
-                used=used,
-                total=total,
-                daily_used=None,
-                daily_cap=None,
-                can_consume=can_consume,
-                reason=reason,
-            )
-
-        today = now.date()
-        daily_used = self._usage_repo.count_used_on_date(user_id, today)
-        can_consume = daily_used < terms.daily_cap
-        reason = None if can_consume else "достигнут дневной лимит"
-        return SubsStatus(
-            user_id=user_id,
-            plan=subscription.plan,
-            period_start=subscription.starts_at,
-            period_end=subscription.ends_at,
-            used=None,
-            total=None,
-            daily_used=daily_used,
-            daily_cap=terms.daily_cap,
-            can_consume=can_consume,
-            reason=reason,
-        )
-
-    def can_consume(self, user_id: int, now: datetime) -> tuple[bool, str | None]:
-        """Return whether a user can consume one more check right now."""
-
-        status = self.get_status(user_id, now)
-        return status.can_consume, status.reason
-
-    def consume_one(self, user_id: int, now: datetime) -> SubsStatus:
-        """Consume a single check if possible and return the updated status."""
-
-        status = self.get_status(user_id, now)
-        if not status.can_consume:
-            return status
-
-        self._usage_repo.add_usage(user_id, now)
-        return self.get_status(user_id, now)
-
-    def purchase(self, user_id: int, plan: PlanCode, purchased_at: datetime) -> Subscription:
-        """Register a new subscription purchase and return the stored entity."""
-
-        terms = PLANS[plan]
-        starts_at = purchased_at
-        ends_at = purchased_at + timedelta(days=terms.period_days)
-        return self._subs_repo.add_subscription(
-            user_id=user_id,
+    if plan == "unlim":
+        cap_total = PLANS["unlim"]["day_cap"]
+        await dal.extend_or_start_plan(
+            uid,
             plan=plan,
-            purchased_at=purchased_at,
-            starts_at=starts_at,
-            ends_at=ends_at,
+            start_ts=start_ts,
+            day_cap_total=cap_total,
         )
+    else:
+        checks_total = PLANS[plan]["checks_total"]
+        await dal.extend_or_start_plan(
+            uid,
+            plan=plan,
+            start_ts=start_ts,
+            checks_total=checks_total,
+        )
+
+
+async def can_consume(uid: int, *, now_ts: Optional[float] = None) -> CanConsumeResult:
+    ts = now_ts if now_ts is not None else utc_now_ts()
+
+    if await dal.get_unlimited_override(uid):
+        return CanConsumeResult(ok=True, mode="override", reason=None)
+
+    sub = await dal.get_sub(uid)
+    plan = sub["plan"] if sub and sub.get("plan") else "none"
+    expires_at = sub.get("expires_at") if sub else None
+    expires_at_ts = expires_at.timestamp() if isinstance(expires_at, datetime) else None
+    is_active = bool(expires_at_ts is not None and expires_at_ts > ts)
+
+    if plan == "unlim" and is_active:
+        today = to_date_utc(ts)
+        cap_total = PLANS["unlim"]["day_cap"]
+        await dal.ensure_unlim_daycap(uid, now_date=today, cap_total=cap_total)
+        refreshed = await dal.get_sub(uid) or {}
+        day_cap_left = refreshed.get("day_cap_left")
+        if day_cap_left is not None and day_cap_left > 0:
+            return CanConsumeResult(ok=True, mode="unlim", reason=None)
+        return CanConsumeResult(ok=False, mode="unlim", reason="day cap exceeded")
+
+    if plan in {"p20", "p50"} and is_active:
+        checks_left = sub.get("checks_left") if sub else None
+        if checks_left is not None and checks_left > 0:
+            return CanConsumeResult(ok=True, mode="quota", reason=None)
+        return CanConsumeResult(ok=False, mode="quota", reason="no checks left")
+
+    return CanConsumeResult(ok=False, mode="none", reason="no active subscription")
+
+
+async def consume(uid: int, *, now_ts: Optional[float] = None) -> None:
+    ts = now_ts if now_ts is not None else utc_now_ts()
+    decision = await can_consume(uid, now_ts=ts)
+
+    if not decision["ok"]:
+        mode = decision["mode"]
+        if mode == "none":
+            raise ValueError("no active subscription")
+        if mode == "quota":
+            raise ValueError("no checks left")
+        if mode == "unlim":
+            raise ValueError("day cap exceeded")
+        raise ValueError(decision.get("reason") or "cannot consume")
+
+    mode = decision["mode"]
+    if mode == "override":
+        return
+
+    if mode == "unlim":
+        today = to_date_utc(ts)
+        cap_total = PLANS["unlim"]["day_cap"]
+        await dal.ensure_unlim_daycap(uid, now_date=today, cap_total=cap_total)
+        await dal.decrement_unlim_daycap(uid, now_date=today, cap_total=cap_total)
+        return
+
+    if mode == "quota":
+        await dal.decrement_check(uid, now_ts=ts)
+        return
+
+    raise ValueError("no active subscription")
 
 
 __all__ = [
-    "PlanCode",
-    "PlanTerms",
-    "PLANS",
-    "SubsRepo",
-    "UsageRepo",
-    "Subscription",
-    "SubsStatus",
-    "SubsService",
+    "PlanName",
+    "SubInfo",
+    "CanConsumeResult",
+    "utc_now_ts",
+    "to_date_utc",
+    "get_status",
+    "purchase",
+    "can_consume",
+    "consume",
 ]

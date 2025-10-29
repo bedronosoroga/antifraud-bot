@@ -421,7 +421,14 @@ async def set_sub(uid: int, data: dict) -> None:
         await session.execute(stmt)
 
 
-async def extend_or_start_plan(uid: int, *, plan: str, start_ts: float) -> None:
+async def extend_or_start_plan(
+    uid: int,
+    *,
+    plan: str,
+    start_ts: float,
+    checks_total: Optional[int] = None,
+    day_cap_total: Optional[int] = None,
+) -> None:
     if plan not in PAID_PLAN_VALUES:
         raise ValueError(f"plan must be one of {', '.join(sorted(PAID_PLAN_VALUES))}")
 
@@ -439,13 +446,15 @@ async def extend_or_start_plan(uid: int, *, plan: str, start_ts: float) -> None:
         "updated_at": now_utc(),
     }
 
-    if plan == "p20":
-        values["checks_left"] = 20
-    elif plan == "p50":
-        values["checks_left"] = 50
+    if plan in {"p20", "p50"}:
+        if checks_total is None or checks_total <= 0:
+            raise ValueError("checks_total must be provided for quota plans")
+        values["checks_left"] = checks_total
     elif plan == "unlim":
-        values["day_cap_left"] = 50
-        values["last_day_reset"] = date.fromisoformat(today_date())
+        if day_cap_total is None or day_cap_total <= 0:
+            raise ValueError("day_cap_total must be provided for unlimited plan")
+        values["day_cap_left"] = day_cap_total
+        values["last_day_reset"] = start_dt.date()
 
     stmt = pg_insert(subs).values(values)
     stmt = stmt.on_conflict_do_update(
