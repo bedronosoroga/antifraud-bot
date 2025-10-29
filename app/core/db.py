@@ -719,17 +719,71 @@ async def add_payout(uid: int, *, amount_kop: int, status: str) -> dict[str, Any
         return dict(result.mappings().one())
 
 
-async def ensure_free_grant(uid: int, *, now_ts: float) -> None:
-    now_dt = datetime.fromtimestamp(now_ts, tz=timezone.utc)
-    expires_dt = now_dt + timedelta(days=3)
+async def ensure_free_grant(
+    uid: int,
+    *,
+    granted_at_ts: float,
+    expires_at_ts: float,
+    total: int,
+) -> None:
+    if total <= 0:
+        raise ValueError("total must be positive")
+    if expires_at_ts <= granted_at_ts:
+        raise ValueError("expires_at_ts must be greater than granted_at_ts")
 
-    stmt = pg_insert(free_grants).values(
-        uid=uid,
-        granted_at=now_dt,
-        expires_at=expires_dt,
-        total=5,
-        used=0,
-    ).on_conflict_do_nothing(index_elements=[free_grants.c.uid])
+    granted_at = datetime.fromtimestamp(granted_at_ts, tz=timezone.utc)
+    expires_at = datetime.fromtimestamp(expires_at_ts, tz=timezone.utc)
+
+    stmt = (
+        pg_insert(free_grants)
+        .values(
+            uid=uid,
+            granted_at=granted_at,
+            expires_at=expires_at,
+            total=total,
+            used=0,
+        )
+        .on_conflict_do_nothing(index_elements=[free_grants.c.uid])
+    )
+
+    async with Session() as session, session.begin():
+        await session.execute(stmt)
+
+
+async def set_free_grant(
+    uid: int,
+    *,
+    granted_at_ts: float,
+    expires_at_ts: float,
+    total: int,
+) -> None:
+    if total <= 0:
+        raise ValueError("total must be positive")
+    if expires_at_ts <= granted_at_ts:
+        raise ValueError("expires_at_ts must be greater than granted_at_ts")
+
+    granted_at = datetime.fromtimestamp(granted_at_ts, tz=timezone.utc)
+    expires_at = datetime.fromtimestamp(expires_at_ts, tz=timezone.utc)
+
+    stmt = (
+        pg_insert(free_grants)
+        .values(
+            uid=uid,
+            granted_at=granted_at,
+            expires_at=expires_at,
+            total=total,
+            used=0,
+        )
+        .on_conflict_do_update(
+            index_elements=[free_grants.c.uid],
+            set_={
+                "granted_at": granted_at,
+                "expires_at": expires_at,
+                "total": total,
+                "used": 0,
+            },
+        )
+    )
 
     async with Session() as session, session.begin():
         await session.execute(stmt)

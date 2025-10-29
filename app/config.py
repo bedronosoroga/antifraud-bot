@@ -15,6 +15,7 @@ __all__ = [
     "RUN_MIGRATIONS",
     "DEV_CREATE_ALL",
     "PLANS",
+    "FREE",
     "load_config",
     "cfg",
 ]
@@ -265,6 +266,11 @@ PLANS: dict[str, dict[str, int]] = {
         "day_cap": cfg.plans["unlim"].daily_cap or 0,
         "price_kop": cfg.plans["unlim"].price_rub * 100,
     },
+}
+
+FREE: dict[str, int] = {
+    "total": cfg.free_count,
+    "ttl_hours": cfg.free_ttl_hours,
 }
 
 # Example usage:
