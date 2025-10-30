@@ -1,106 +1,122 @@
 from __future__ import annotations
 
-from app.config import cfg
-
-_FILLED_BLOCK = "▰"
-_EMPTY_BLOCK = "▱"
+from app.config import cfg, PAYMENTS_SANDBOX_NOTE
 
 
-# === helpers =================================================================
-
-def progress_bar(width: int, filled: int) -> str:
-    """Return a square progress bar.
-
-    >>> progress_bar(5, 2)
-    '▰▰▱▱▱'
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    """
+    Русские склонения: "1 день / 2 дня / 5 дней", работает для любых слов.
     """
 
-    if width <= 0:
-        return ""
-    clamped = max(0, min(filled, width))
-    empty = width - clamped
-    return _FILLED_BLOCK * clamped + _EMPTY_BLOCK * empty
-
-
-def fmt_percent(used: int, total: int) -> str:
-    """Return a safe integer percentage.
-
-    >>> fmt_percent(3, 20)
-    '15%'
-    """
-
-    safe_total = max(1, total)
-    pct = round(max(0, used) * 100 / safe_total)
-    pct = max(0, min(100, pct))
-    return f"{pct}%"
+    n_abs = abs(n)
+    if 11 <= n_abs % 100 <= 14:
+        return many
+    tail = n_abs % 10
+    if tail == 1:
+        return one
+    if tail in {2, 3, 4}:
+        return few
+    return many
 
 
 def fmt_rub(amount: int) -> str:
-    """Format rubles with currency sign."""
+    """
+    Возвращает '299 ₽' без разделителей тысяч.
+    """
 
     return f"{amount} ₽"
 
 
 def bullet_list(items: list[str]) -> str:
-    """Join items into a bullet list.
-
-    >>> bullet_list(['a', 'b'])
-    '• a\n• b'
+    """
+    Склеивает список строк в маркированный список с '• '. Пустые элементы игнорируются.
     """
 
-    cleaned = [item.strip() for item in items if item and item.strip()]
-    return "\n".join(f"• {item}" for item in cleaned)
+    filtered = [item for item in items if item and item.strip()]
+    return "\n".join(f"• {line}" for line in filtered)
 
 
-def _plural(n: int, forms: tuple[str, str, str]) -> str:
-    """Return russian plural form."""
+def fmt_percent(numerator: int, denominator: int) -> str:
+    """
+    Безопасное деление, округление до целых.
+    Примеры:
+    >>> fmt_percent(0, 20)
+    '0%'
+    >>> fmt_percent(3, 20)
+    '15%'
+    >>> fmt_percent(20, 20)
+    '100%'
+    """
 
-    n = abs(int(n)) % 100
-    n1 = n % 10
-    if 11 <= n <= 19:
-        return forms[2]
-    if n1 == 1:
-        return forms[0]
-    if 2 <= n1 <= 4:
-        return forms[1]
-    return forms[2]
-
-
-def _plan_caption(total: int) -> str:
-    """Return plan caption by total checks."""
-
-    for plan in cfg.plans.values():
-        if getattr(plan, "checks_in_pack", None) == total:
-            title = getattr(plan, "title", None)
-            if title:
-                return str(title)
-    if total > 0:
-        return f"{total} проверок"
-    return "пакет"
+    if denominator <= 0:
+        return "0%"
+    numerator = max(numerator, 0)
+    if numerator == 0:
+        return "0%"
+    percent = round(100 * numerator / denominator)
+    return f"{percent}%"
 
 
-# === buttons =================================================================
+def progress_bar(used: int, total: int, blocks: int = 5) -> str:
+    """
+    Рисует бар ▰/▱ по факту used/total.
+    - total <= 0 -> считаем total = 1, used = min(used, 1)
+    - used < 0 -> 0; used > total -> total
+    Всегда 0..blocks заполненных ▰.
+    Примеры:
+    >>> progress_bar(0, 20, 5)
+    '▱▱▱▱▱'
+    >>> progress_bar(10, 20, 5)
+    '▰▰▰▱▱'
+    >>> progress_bar(20, 20, 5)
+    '▰▰▰▰▰'
+    """
 
+    if blocks <= 0:
+        raise ValueError("blocks must be positive")
+    if total <= 0:
+        total = 1
+        used = min(used, 1)
+    used = max(0, min(used, total))
+    if used == 0:
+        filled = 0
+    else:
+        filled = -(-used * blocks // total)
+    filled = min(filled, blocks)
+    empty = blocks - filled
+    return "▰" * filled + "▱" * empty
+
+
+# Действия
 ACTION_BTN_CHECK = "Ещё проверка"
 ACTION_BTN_HISTORY = "История"
 ACTION_BTN_MENU = "В меню"
 
-BTN_BUY_P20 = "Купить 20"
-BTN_BUY_P50 = "Купить 50"
-BTN_BUY_UNLIM = "Купить Безлимит"
-
-BTN_SUPPORT = "Написать нам"
-BTN_PAY_SUPPORT = "В поддержку"
-BTN_REPEAT_PAYMENT = "Повторить оплату"
-BTN_CHOOSE_ANOTHER_PLAN = "Выбрать другой план"
-
-BTN_MY_REF_LINK = "Моя ссылка"
-BTN_HOW_IT_WORKS = "Как это работает"
-
+# Навигация
 BTN_BACK = "Назад"
 BTN_MENU = ACTION_BTN_MENU
 BTN_MORE = "Дальше"
 
+# Покупка/оплата
+BTN_BUY_P20 = "Купить 20"
+BTN_BUY_P50 = "Купить 50"
+BTN_BUY_UNLIM = "Купить Безлимит"
+BTN_REPEAT_PAYMENT = "Повторить оплату"
+BTN_CHOOSE_ANOTHER_PLAN = "Выбрать другой план"
+BTN_PAY_SUPPORT = "В поддержку"
+DEMO_PAYMENT_HEADER = "Оплата (демо)"
+DEMO_PAYMENT_NOTE = PAYMENTS_SANDBOX_NOTE
+DEMO_PAYMENT_CREATED = "Заказ создан. Для теста подтвердите или отмените оплату."
+DEMO_PAYMENT_CONFIRMED = "✅ Оплата подтверждена (демо). Доступ активирован."
+DEMO_PAYMENT_REJECTED = "❌ Оплата отклонена (демо). Попробуйте снова."
+
+# Поддержка/FAQ
+BTN_SUPPORT = "Написать нам"
+BTN_FAQ = "FAQ"
+
+# Рефералка
+BTN_MY_REF_LINK = "Моя ссылка"
+BTN_HOW_IT_WORKS = "Как это работает"
 BTN_REF_COPY = "Скопировать"
 BTN_REF_SHARE = "Поделиться"
 BTN_REF_SPEND_20 = "Купить 20 из баланса"
@@ -108,7 +124,7 @@ BTN_REF_SPEND_50 = "Купить 50 из баланса"
 BTN_REF_SPEND_UNLIM = "Купить Безлимит из баланса"
 BTN_REF_WITHDRAW = "Вывод"
 
-BTN_FAQ = "FAQ"
+# Компания АТИ
 BTN_WHY_ASK = "Почему спрашиваем?"
 BTN_SET_LATER = "Указать позже"
 BTN_SET_NOW = "Указать"
@@ -116,308 +132,279 @@ BTN_CHANGE_CODE = "Изменить код"
 BTN_CHECK_THIS_CODE = "Проверить этот код"
 
 
-# === generic =================================================================
+def hint_send_code() -> str:
+    """Главная подсказка."""
+
+    return "🔎 Пришлите код АТИ (до 7 цифр) — ответим сразу."
+
 
 def invalid_input_non_digits() -> str:
-    """Error when digits are expected."""
+    """Сообщает о необходимости прислать только цифры."""
 
     return "Похоже, это не цифры. Отправьте только номер."
 
 
 def err_need_digits_3_7() -> str:
-    """ATI code length error."""
+    """Сообщает о неверной длине кода."""
 
-    return "Нужно от 3 до 7 цифр. Попробуйте ещё раз."
+    return "Нужно до 7 цифр. Попробуйте ещё раз."
 
 
 def too_many_requests() -> str:
-    """Rate limiting warning."""
+    """Сообщение о превышении частоты запросов."""
 
     return "Слишком часто. Попробуйте чуть позже."
 
 
 def throttle_msg(seconds: int) -> str:
-    """Tell user to wait before next check."""
+    """С учётом склонения."""
 
-    return (
-        "Подождите "
-        f"{seconds} {_plural(seconds, ('секунду', 'секунды', 'секунд'))} перед следующей проверкой."
-    )
+    unit = _plural(seconds, "секунду", "секунды", "секунд")
+    return f"Подождите {seconds} {unit} перед следующей проверкой."
 
-
-def nudge_enter_code() -> str:
-    """Reminder to send the ATI code."""
-
-    return "Просто пришлите номер АТИ — проверим сразу."
-
-
-# === plans & payments =========================================================
 
 def plans_list() -> str:
-    """List current subscription plans."""
+    """
+    Список планов по cfg.plans: p20(299), p50(469), unlim(799, cap).
+    Формат: 'Доступные планы:\n• 20 проверок — 299 ₽/мес\n...'
+    """
 
-    lines: list[str] = ["Месячные планы:"]
     plan_p20 = cfg.plans.get("p20")
     plan_p50 = cfg.plans.get("p50")
     plan_unlim = cfg.plans.get("unlim")
 
-    if plan_p20 and plan_p20.checks_in_pack:
-        lines.append(f"• {plan_p20.checks_in_pack} — {fmt_rub(plan_p20.price_rub)}")
-    if plan_p50 and plan_p50.checks_in_pack:
-        lines.append(f"• {plan_p50.checks_in_pack} — {fmt_rub(plan_p50.price_rub)}")
-    if plan_unlim:
-        caption = f"• {plan_unlim.title} — {fmt_rub(plan_unlim.price_rub)}"
-        if plan_unlim.daily_cap:
-            caption += f" (до {plan_unlim.daily_cap}/сутки)"
-        lines.append(caption)
+    lines: list[str] = []
+    if plan_p20 is not None:
+        lines.append(f"20 проверок — {fmt_rub(plan_p20.price_rub)}/мес")
+    if plan_p50 is not None:
+        lines.append(f"50 проверок — {fmt_rub(plan_p50.price_rub)}/мес")
+    if plan_unlim is not None:
+        cap_suffix = f" (до {plan_unlim.daily_cap} в сутки)" if plan_unlim.daily_cap else ""
+        lines.append(f"Безлимит — {fmt_rub(plan_unlim.price_rub)}/мес{cap_suffix}")
 
-    return "\n".join(lines)
+    body = bullet_list(lines)
+    return f"Доступные планы:\n{body}" if body else "Доступные планы:"
 
 
 def paywall_no_checks() -> str:
-    """Paywall text when checks are gone."""
+    """Сообщение о нулевом остатке проверок."""
 
     return "Проверок не осталось.\n\n" + plans_list()
 
 
 def payment_success(expires_date: str, extra_tail: str = "") -> str:
-    """Payment success message."""
+    """
+    'Оплата прошла ✔ Подписка действует до: {expires_date}. Остаток обновлён.'
+    Если extra_tail не пуст — добавить новой строкой.
+    """
 
     base = f"Оплата прошла ✔ Подписка действует до: {expires_date}. Остаток обновлён."
     if extra_tail:
-        base = f"{base}\n{extra_tail}"
+        return base + "\n" + extra_tail
     return base
 
 
 def payment_incomplete() -> str:
-    """Incomplete payment warning."""
+    """Сообщение о незавершённом платеже."""
 
-    return "Оплата не прошла. Попробуйте ещё раз — платёж не завершён."
+    return "Платёж не завершён. Что делаем?"
 
 
 def payment_timeout() -> str:
-    """Payment timeout warning."""
+    """Сообщение о неподтверждённом платеже."""
 
-    return "Оплата не прошла. Попробуйте ещё раз — платёж не подтвердился вовремя."
+    return "Платёж не подтверждён."
 
 
 def payment_failed_try_again() -> str:
-    """Generic payment failure message."""
+    """Сообщение о неудачной оплате."""
 
     return "Оплата не прошла. Попробуйте ещё раз или выберите другой способ."
 
 
-def payment_abandoned() -> str:
-    """Reminder about unfinished payment."""
-
-    return "Оплата не прошла. Попробуйте ещё раз — платёж не завершён."
-
-
 def refund_processed() -> str:
-    """Refund confirmation."""
+    """Сообщение о завершённом возврате."""
 
     return "Возврат оформлен. Срок и остаток скорректированы."
 
 
-# === free & reactivation ======================================================
+def free_pack_status(left: int, until: str) -> str:
+    """'Бесплатно осталось: {left} • До: {until}'."""
 
-def free_pack_status(left: int, expires_date: str) -> str:
-    """Show free pack status."""
-
-    return f"Бесплатно осталось: {left} • Действует до: {expires_date}"
+    return f"Бесплатно осталось: {left} • До: {until}"
 
 
-def free_expiring_24h(left: int, expires_date: str) -> str:
-    """Warn about free checks expiring."""
+def nudge_enter_code() -> str:
+    """Напоминание отправить код АТИ."""
 
-    return (
-        "Ещё есть бесплатные проверки: "
-        f"{left}. Действуют до: {expires_date}. Пришлите код — проверим сейчас."
-    )
+    return "Просто пришлите номер АТИ — проверим сразу."
+
+
+def free_expiring_24h(left: int, until: str) -> str:
+    """Сообщение о скором завершении бесплатных проверок."""
+
+    return f"Ещё есть бесплатные: {left}. До завершения: {until}. Пришлите код — проверим сейчас."
 
 
 def free_low_left(left: int) -> str:
-    """Warn when few free checks remain."""
+    """Сообщение о малом остатке бесплатных проверок."""
 
-    return f"Бесплатных осталось: {left}. Успейте использовать."
+    word = _plural(left, "бесплатная проверка", "бесплатные проверки", "бесплатных проверок")
+    return f"Осталось: {left} {word}. Успейте использовать."
+
+
+def payment_abandoned() -> str:
+    """Напоминание о брошенном платеже."""
+
+    return "Платёж не завершён. Вернуться и закончить?"
 
 
 def inactive_with_active_subscription(days: int) -> str:
-    """Notify about inactivity."""
+    """Сообщение о неактивности при активной подписке."""
 
-    return (
-        "У вас активная подписка, но "
-        f"{days} {_plural(days, ('день', 'дня', 'дней'))} без проверок. Пришлите код — проверим."
-    )
+    unit = _plural(days, "день", "дня", "дней")
+    return f"У вас активная подписка, но {days} {unit} без проверок. Пришлите код — проверим."
 
 
 def winback_no_activity(days: int) -> str:
-    """Winback sequence message."""
+    """Возврат пользователей после простоя."""
 
-    head = (
-        "Давно не заходили ("
-        f"{days} {_plural(days, ('день', 'дня', 'дней'))}). Напомнить планы?"
-    )
-    return head + "\n" + plans_list()
+    unit = _plural(days, "день", "дня", "дней")
+    return f"Давно не заходили ({days} {unit}). Напомнить планы?\n" + plans_list()
 
 
-# === profile & status =========================================================
+def unlim_cap_hit_today(cap: int) -> str:
+    """
+    Сообщение об исчерпании суточного лимита безлимита.
+    cap <= 0 -> универсальная фраза без '0/сутки'.
+    """
 
-def _progress_blocks_used(used: int, total: int, width: int) -> int:
-    """Return filled blocks for usage bar."""
-
-    safe_total = max(1, total)
-    safe_used = max(0, min(used, safe_total))
-    if safe_used == 0:
-        return 0
-    ratio = safe_used / safe_total
-    return max(1, min(width, round(ratio * width)))
+    if cap > 0:
+        return f"Дневной лимит {cap} в сутки исчерпан. Счётчик обновится завтра."
+    return "Безлимит на сегодня исчерпан. Счётчик обновится завтра."
 
 
-def status_line_metered_exact(used: int, total: int, expires_date: str) -> str:
-    """Return status line for metered plan.
-
-    >>> "Осталось: 5/20" in status_line_metered_exact(used=15, total=20, expires_date="24.11")
+def status_line_metered_exact(
+    plan_title: str,
+    used: int,
+    total: int,
+    expires_date: str,
+    bar_blocks: int = 5,
+) -> str:
+    """
+    'Подписка: {plan_title} • Осталось: {left}/{total} ({pct_left}) • Действует до: {expires_date}\n{bar}'
+    где left = max(0, total - used); pct_left = fmt_percent(left, total);
+    bar = progress_bar(used_clamped, total_clamped, bar_blocks).
+    Doctest:
+    >>> s = status_line_metered_exact("50", used=10, total=50, expires_date="24.11")
+    >>> "Осталось: 40/50" in s and "(80%)" in s
     True
     """
 
-    safe_total = max(0, total)
-    safe_used = max(0, min(used, safe_total)) if safe_total else 0
-    left = max(0, safe_total - safe_used)
-    pct_left = fmt_percent(safe_total - safe_used, max(1, safe_total))
-    filled = _progress_blocks_used(safe_used, max(1, safe_total), 5)
-    bar = progress_bar(5, filled)
+    left = max(0, total - used)
+    pct_left = fmt_percent(left, total)
+    total_clamped = total if total > 0 else 0
+    if total_clamped > 0:
+        used_clamped = max(0, min(used, total_clamped))
+    else:
+        used_clamped = max(0, used)
+    bar = progress_bar(used_clamped, total_clamped, bar_blocks)
     return (
-        f"Подписка: {_plan_caption(safe_total)} • Осталось: {left}/{safe_total} ({pct_left})"
-        f" • Действует до: {expires_date}\n{bar}"
+        f"Подписка: {plan_title} • Осталось: {left}/{total} ({pct_left}) • "
+        f"Действует до: {expires_date}\n{bar}"
     )
 
 
-def status_line_unlim(today_used: int, cap: int | None, expires_date: str) -> str:
-    """Return status line for unlimited plan.
-
-    >>> "Безлимит" in status_line_unlim(today_used=5, cap=50, expires_date="24.11")
-    True
+def profile_overview_metered_exact(plan_title: str, used: int, total: int, expires_date: str) -> str:
+    """
+    'Подписка: {plan_title}\nОсталось: {left}/{total} ({pct_left})\nДействует до: {expires_date}'
     """
 
-    safe_today = max(0, today_used)
-    if cap and cap > 0:
-        safe_cap = max(1, cap)
-        pct = fmt_percent(safe_today, safe_cap)
-        filled = _progress_blocks_used(safe_today, safe_cap, 5)
-        bar = progress_bar(5, filled)
-        return (
-            "Подписка: Безлимит\n"
-            f"Сегодня: {safe_today}/{safe_cap} ({pct})\n"
-            f"Действует до: {expires_date}\n"
-            f"{bar}"
-        )
-    bar = progress_bar(5, 5 if safe_today else 0)
+    left = max(0, total - used)
+    pct_left = fmt_percent(left, total)
     return (
-        "Подписка: Безлимит\n"
-        f"Сегодня: {safe_today}\n"
-        f"Действует до: {expires_date}\n"
-        f"{bar}"
-    )
-
-
-def unlim_cap_hit_today(max_daily: int) -> str:
-    """Notice about hitting unlimited cap."""
-
-    return f"Лимит {max_daily}/сутки достигнут. Можно снова завтра после 00:00."
-
-
-def profile_overview_metered_exact(used: int, total: int, expires_date: str) -> str:
-    """Return profile overview for metered plan.
-
-    >>> "Осталось: 10/20" in profile_overview_metered_exact(used=10, total=20, expires_date="24.11")
-    True
-    """
-
-    safe_total = max(0, total)
-    safe_used = max(0, min(used, safe_total)) if safe_total else 0
-    left = max(0, safe_total - safe_used)
-    pct_left = fmt_percent(safe_total - safe_used, max(1, safe_total))
-    return (
-        f"Подписка: {_plan_caption(safe_total)}\n"
-        f"Осталось: {left}/{safe_total} ({pct_left})\n"
+        f"Подписка: {plan_title}\n"
+        f"Осталось: {left}/{total} ({pct_left})\n"
         f"Действует до: {expires_date}"
     )
 
 
-def profile_overview_unlim(expires_date: str) -> str:
-    """Return profile overview for unlimited plan."""
+def status_line_unlim(today_used: int, cap: int | None, expires_date: str, bar_blocks: int = 5) -> str:
+    """
+    При cap>0: 'Безлимит: до {cap}/сутки • Сегодня: {today_used}/{cap} ({pct}) • Действует до: {expires_date}\n{bar}'
+    При cap<=0/None: 'Безлимит • Сегодня: {today_used} • Действует до: {expires_date}\n{bar}' (bar по 1).
+    Doctest:
+    >>> "Сегодня: 10/50 (20%)" in status_line_unlim(10, 50, "24.11")
+    True
+    >>> "0/сутки" in status_line_unlim(10, 0, "24.11")
+    False
+    """
 
-    return f"Подписка: Безлимит\nДействует до: {expires_date}"
-
-
-# === settings within profile ==================================================
-
-def settings_menu(
-    notif_payments: bool,
-    notif_ref: bool,
-    mask_history: bool,
-    post_report_action: str,
-) -> str:
-    """Describe current settings."""
-
-    def _on_off(value: bool) -> str:
-        return "вкл" if value else "выкл"
-
-    action_map = {
-        "check": ACTION_BTN_CHECK,
-        "menu": ACTION_BTN_MENU,
-        ACTION_BTN_CHECK: ACTION_BTN_CHECK,
-        ACTION_BTN_MENU: ACTION_BTN_MENU,
-    }
-    action = action_map.get(post_report_action, post_report_action)
-
-    items = [
-        f"Уведомления об оплатах: {_on_off(notif_payments)}",
-        f"Уведомления о реферальных начислениях: {_on_off(notif_ref)}",
-        f"Маскировать коды в истории: {_on_off(mask_history)}",
-        f"После отчёта по умолчанию: {action}",
-    ]
-    return "Настройки:\n" + bullet_list(items)
+    if cap and cap > 0:
+        used_clamped = max(0, min(today_used, cap))
+        pct = fmt_percent(used_clamped, cap)
+        bar = progress_bar(used_clamped, cap, bar_blocks)
+        return (
+            f"Безлимит: до {cap}/сутки • Сегодня: {used_clamped}/{cap} ({pct}) • "
+            f"Действует до: {expires_date}\n{bar}"
+        )
+    used_clamped = max(0, today_used)
+    bar = progress_bar(used_clamped, 1, bar_blocks)
+    return f"Безлимит • Сегодня: {used_clamped} • Действует до: {expires_date}\n{bar}"
 
 
-def settings_changed_ok() -> str:
-    """Confirm settings update."""
+def profile_overview_unlim(today_used: int, cap: int | None, expires_date: str) -> str:
+    """
+    'Подписка: Безлимит{cap_suffix}\nСегодня: {today_used}{den}\nДействует до: {expires_date}'
+    где cap_suffix = ' (до {cap}/сутки)' при cap>0, иначе пусто; den = '/{cap}' при cap>0, иначе пусто.
+    """
 
-    return "Готово, настройки обновлены."
+    if cap and cap > 0:
+        cap_suffix = f" (до {cap}/сутки)"
+        denominator = f"/{cap}"
+    else:
+        cap_suffix = ""
+        denominator = ""
+    return (
+        f"Подписка: Безлимит{cap_suffix}\n"
+        f"Сегодня: {today_used}{denominator}\n"
+        f"Действует до: {expires_date}"
+    )
 
-
-# === referral =================================================================
 
 def ref_header() -> str:
-    """Referral header."""
+    """Заголовок реферального раздела."""
 
     return "Пригласить и заработать"
 
 
 def ref_link_block(link: str) -> str:
-    """Referral link block."""
+    """Блок с реферальной ссылкой."""
 
     return f"Ваша ссылка:\n{link}\n\nСкопируйте и отправьте друзьям."
 
 
 def ref_level_block(level: int, percent: int, to_next: int | None) -> str:
-    """Referral level description."""
+    """
+    'Ваш уровень: {level} • Вознаграждение: {percent}%'
+    Если to_next задан: 'До следующего уровня осталось: {to_next} оплата/оплаты/оплат'
+    """
 
     base = f"Ваш уровень: {level} • Вознаграждение: {percent}%"
-    if to_next is not None:
-        base += f"\nДо следующего уровня осталось: {to_next} оплат"
-    return base
+    if to_next is None:
+        return base
+    word = _plural(to_next, "оплата", "оплаты", "оплат")
+    return f"{base}\nДо следующего уровня осталось: {to_next} {word}"
 
 
 def ref_earnings_block(accrued_rub: int, pending_rub: int) -> str:
-    """Referral earnings block."""
+    """Возвращает строку с балансом реферальных начислений."""
 
     return f"Зачислено: {fmt_rub(accrued_rub)} • Ожидает: {fmt_rub(pending_rub)}"
 
 
 def ref_spend_withdraw_block() -> str:
-    """Referral spend/withdraw block."""
+    """Подсказка, куда потратить или вывести средства."""
 
     return (
         "Куда потратить:\n"
@@ -429,66 +416,55 @@ def ref_spend_withdraw_block() -> str:
 
 
 def ref_how_it_works() -> str:
-    """Explain referral mechanics."""
+    """Описание механики реферальной программы."""
 
-    steps = [
-        "Делитесь вашей ссылкой.",
-        "Друг оплачивает подписку.",
-        "Мы начисляем % на ваш баланс.",
-        "Начисления становятся доступными через 3 дня (если не было возврата).",
-        "Процент растёт по мере количества оплат ваших приглашённых.",
-    ]
-    return "Как это работает:\n" + bullet_list(steps)
+    hold = getattr(cfg, "ref_hold_days", 3)
+    return (
+        "Как это работает:\n"
+        "• Делитесь вашей ссылкой.\n"
+        "• Друг оплачивает подписку.\n"
+        f"• Мы начисляем % на ваш баланс (доступно через {hold} дн.).\n"
+        "• Процент растёт по мере количества оплат ваших приглашённых."
+    )
 
 
 def ref_levels_table() -> str:
-    """Referral levels overview."""
+    """Таблица уровней и процентов."""
 
-    levels = [
-        "0–2 оплат — 10%",
-        "3–9 — 20%",
-        "10–24 — 30%",
-        "25–49 — 40%",
-        "≥50 — 50%",
-    ]
-    return "Уровни:\n" + bullet_list(levels)
+    return (
+        "Уровни:\n"
+        "• 0–2 оплат — 10%\n"
+        "• 3–9 — 20%\n"
+        "• 10–24 — 30%\n"
+        "• 25–49 — 40%\n"
+        "• ≥50 — 50%"
+    )
 
 
 def wallet_only_in_referral_notice() -> str:
-    """Explain wallet payments scope."""
+    """Напоминание, что оплата из баланса доступна только в рефералке."""
 
     return "Оплата из баланса доступна только в разделе «Пригласить и заработать»."
 
 
 def ref_balance_only_here_notice() -> str:
-    """Alias for wallet notice inside referral screens."""
+    """Алиас для совместимости."""
 
     return wallet_only_in_referral_notice()
 
 
-def ref_promo_short() -> str:
-    """Short referral promo block."""
-
-    return (
-        "Хотите платить меньше? Пригласите друга — получите до 50% от его подписок.\n"
-        "[Моя ссылка]  [Как это работает]"
-    )
-
-
-# === company ati ==============================================================
-
 def company_ati_ask() -> str:
-    """Ask for ATI code."""
+    """Запрос указать код АТИ компании."""
 
     return (
         "Оплата прошла ✔\n\n"
-        "Укажите код АТИ вашей компании (3–7 цифр).\n"
+        "Укажите код АТИ вашей компании (до 7 цифр).\n"
         "Это нужно один раз, чтобы ускорить поддержку."
     )
 
 
 def company_ati_why() -> str:
-    """Explain ATI request."""
+    """Объяснение, зачем нужен код компании."""
 
     return (
         "Чтобы быстрее помогать вам по вопросам компании и подписки. Код АТИ видим только мы. "
@@ -497,122 +473,112 @@ def company_ati_why() -> str:
 
 
 def company_ati_saved(ati: str) -> str:
-    """Confirm ATI saved."""
+    """Подтверждение сохранения кода компании."""
 
     return f"Готово, код АТИ компании сохранён: {ati}. Изменить можно в Профиль → Настройки."
 
 
 def company_ati_later() -> str:
-    """Acknowledge postponing ATI."""
+    """Сообщение, что код можно указать позже."""
 
     return "Хорошо, напомним позже. Указать можно в Профиль → Настройки."
 
 
 def company_ati_banner_not_set() -> str:
-    """Banner when ATI not set."""
+    """Баннер о том, что код не указан."""
 
     return "Код АТИ компании не указан. [Указать]"
 
 
 def company_ati_change_confirm(new_code: str) -> str:
-    """Confirm ATI change."""
+    """Подтверждение изменения кода компании."""
 
     return f"Уверены, что хотите изменить код на {new_code}?"
 
 
-# === history & help ===========================================================
-
-def hint_send_code() -> str:
-    """Prompt for ATI code."""
-
-    return "🔎 Пришлите код АТИ (3–7 цифр) — ответим сразу."
-
-
-def history_empty() -> str:
-    """Blank history note."""
-
-    return "Пока нет проверок."
-
-
 def history_header() -> str:
-    """History heading."""
+    """Заголовок истории проверок."""
 
     return "История проверок"
 
 
 def history_item_line(status_emoji: str, ati: str, dt: str) -> str:
-    """Return a line for history list."""
+    """Возвращает строку для записи истории."""
 
     return f"{status_emoji} {ati} • {dt}"
 
 
 def history_no_more() -> str:
-    """Footer for history feed."""
+    """Сообщение об отсутствии дополнительных записей."""
 
     return "Это всё на сейчас."
 
 
-def history_empty_hint() -> str:
-    """History hint when list is empty."""
+def history_empty() -> str:
+    """Сообщение о пустой истории."""
 
-    return "Пока нет проверок.\nПришлите код АТИ (3–7 цифр) — проверим сразу."
+    return "Пока нет проверок."
+
+
+def history_empty_hint() -> str:
+    """Подсказка при пустой истории."""
+
+    return "Пока нет проверок.\nПришлите код АТИ (до 7 цифр) — проверим сразу."
 
 
 def help_main() -> str:
-    """Help section title."""
+    """Заголовок раздела помощи."""
 
     return "Помощь"
 
 
 def faq_text() -> str:
-    """FAQ content."""
+    """Ответы на часто задаваемые вопросы."""
 
-    questions = [
-        "Как сделать проверку? — Пришлите код АТИ (3–7 цифр) в чат, и мы сразу дадим отчёт.",
-        "Что делать, если проверок не осталось? — Выберите и оплатите план. Всё занимает минуту.",
-        "Как работают бесплатные проверки? — Новым пользователям выдаётся 5 проверок на 3 дня.",
-        f"Как работает безлимит? — До 50 проверок в сутки, счётчик обнуляется в 00:00 ({cfg.tz}).",
-        "Как оплатить из баланса? — Это возможно только в разделе «Пригласить и заработать».",
-        "Как изменить код АТИ компании? — Профиль → Настройки.",
-    ]
-    return "Вопросы и ответы:\n" + bullet_list(questions)
+    tz = getattr(cfg, "tz", "Europe/Moscow")
+    return (
+        "Вопросы и ответы:\n"
+        "• Как сделать проверку? — Пришлите код АТИ (до 7 цифр) в чат, и мы сразу дадим отчёт.\n"
+        "• Что делать, если проверок не осталось? — Выберите и оплатите план. Всё занимает минуту.\n"
+        "• Как работают бесплатные проверки? — Новым пользователям выдаётся 5 проверок на 3 дня.\n"
+        f"• Как работает безлимит? — До 50 проверок в сутки, счётчик обнуляется в 00:00 ({tz}).\n"
+        "• Как оплатить из баланса? — Это возможно только в разделе «Пригласить и заработать».\n"
+        "• Как изменить код АТИ компании? — Профиль → Настройки."
+    )
 
 
 def support_pretext() -> str:
-    """Support prompt."""
+    """Подсказка обратиться в поддержку."""
 
     return "Если остались вопросы — напишите нам."
 
 
-# === reports ==================================================================
-
 def report_a(ati: str, lin: int, exp: int, tail: str) -> str:
-    """Green report text."""
+    """Общий отчёт с позитивным результатом."""
 
     return (
         f"🟢 Код АТИ {ati} успешно прошёл проверку.\n\n"
         f"📈 Индекс перевозчика: {lin}\n"
         f"📈 Индекс экспедитора: {exp}\n\n"
-        "🛡 Чёрные списки: риск не выявлен\n\n"
+        "🛡 Чёрные списки: риск не выявлен \n\n"
         f"{tail}"
     )
 
 
 def report_b(ati: str, lin: int, exp: int) -> str:
-    """Yellow report text with risk."""
+    """Общий отчёт с повышенным риском."""
 
     return (
         f"🟡 Код АТИ {ati} обнаружен в нашем реестре проверок.\n\n"
         f"📈 Индекс перевозчика: {lin}\n"
         f"📈 Индекс экспедитора: {exp}\n\n"
         "🛡 Чёрные списки: ⁉️ Повышенный риск\n\n"
-        "По данным нашей аналитики, есть риски. Оценка субъективна и может быть изменена при "
-        "появлении благоприятных признаков."
+        "По данным нашей аналитики, есть риски. Оценка субъективна и может быть изменена при появлении благоприятных признаков."
     )
 
 
 def report_c(ati: str, lin: int, exp: int) -> str:
-    """Yellow report text with scarce data."""
+    """Общий отчёт с нейтральным результатом."""
 
     return (
         f"🟡 Код АТИ {ati} проверен.\n\n"
@@ -624,20 +590,19 @@ def report_c(ati: str, lin: int, exp: int) -> str:
 
 
 def report_d(ati: str, lin: int, exp: int) -> str:
-    """Red report text."""
+    """Общий отчёт с критическим риском."""
 
     return (
         f"🔴 Код АТИ {ati} не прошёл проверку.\n\n"
         f"📈 Индекс перевозчика: {lin}\n"
         f"📈 Индекс экспедитора: {exp}\n\n"
-        "🛡 Чёрные списки: ⛔️ Критический риск\n\n"
-        "По данным нашей аналитики, есть риски. Оценка субъективна и может быть изменена при "
-        "появлении благоприятных признаков."
+        "🛡 Чёрные списки: ⛔️ Критический риск \n\n"
+        "По данным нашей аналитики, есть риски. Оценка субъективна и может быть изменена при появлении благоприятных признаков."
     )
 
 
 def report_e(ati: str) -> str:
-    """Yellow report text for unknown code."""
+    """Общий отчёт об отсутствии данных."""
 
     return (
         f"🟡 Код АТИ {ati} не обнаружен в наших реестрах.\n\n"
@@ -649,90 +614,43 @@ def report_e(ati: str) -> str:
 
 
 __all__ = [
-    "progress_bar",
-    "fmt_percent",
-    "fmt_rub",
-    "bullet_list",
-    "ACTION_BTN_CHECK",
-    "ACTION_BTN_HISTORY",
-    "ACTION_BTN_MENU",
-    "BTN_BUY_P20",
-    "BTN_BUY_P50",
-    "BTN_BUY_UNLIM",
-    "BTN_SUPPORT",
-    "BTN_PAY_SUPPORT",
-    "BTN_REPEAT_PAYMENT",
-    "BTN_CHOOSE_ANOTHER_PLAN",
-    "BTN_MY_REF_LINK",
-    "BTN_HOW_IT_WORKS",
-    "BTN_BACK",
-    "BTN_MENU",
-    "BTN_MORE",
-    "BTN_REF_COPY",
-    "BTN_REF_SHARE",
-    "BTN_REF_SPEND_20",
-    "BTN_REF_SPEND_50",
-    "BTN_REF_SPEND_UNLIM",
-    "BTN_REF_WITHDRAW",
-    "BTN_FAQ",
-    "BTN_WHY_ASK",
-    "BTN_SET_LATER",
-    "BTN_SET_NOW",
-    "BTN_CHANGE_CODE",
-    "BTN_CHECK_THIS_CODE",
-    "invalid_input_non_digits",
-    "err_need_digits_3_7",
-    "too_many_requests",
-    "throttle_msg",
-    "nudge_enter_code",
-    "plans_list",
-    "paywall_no_checks",
-    "payment_success",
-    "payment_incomplete",
-    "payment_timeout",
-    "payment_failed_try_again",
-    "payment_abandoned",
-    "refund_processed",
-    "free_pack_status",
-    "free_expiring_24h",
-    "free_low_left",
-    "inactive_with_active_subscription",
-    "winback_no_activity",
-    "status_line_metered_exact",
-    "status_line_unlim",
-    "unlim_cap_hit_today",
-    "profile_overview_metered_exact",
-    "profile_overview_unlim",
-    "ref_header",
-    "ref_link_block",
-    "ref_level_block",
-    "ref_earnings_block",
-    "ref_spend_withdraw_block",
-    "ref_how_it_works",
-    "ref_levels_table",
-    "wallet_only_in_referral_notice",
-    "ref_balance_only_here_notice",
-    "ref_promo_short",
-    "company_ati_ask",
-    "company_ati_why",
-    "company_ati_saved",
-    "company_ati_later",
-    "company_ati_banner_not_set",
-    "company_ati_change_confirm",
-    "hint_send_code",
-    "history_empty",
-    "history_header",
-    "history_item_line",
-    "history_no_more",
-    "history_empty_hint",
-    "help_main",
-    "faq_text",
-    "support_pretext",
-    "report_a",
-    "report_b",
-    "report_c",
-    "report_d",
-    "report_e",
-    "settings_menu",
-    "settings_changed_ok",
+    # helpers
+    "progress_bar", "fmt_rub", "bullet_list", "fmt_percent",
+    # buttons
+    "ACTION_BTN_CHECK", "ACTION_BTN_HISTORY", "ACTION_BTN_MENU",
+    "BTN_BACK", "BTN_MENU", "BTN_MORE",
+    "BTN_BUY_P20", "BTN_BUY_P50", "BTN_BUY_UNLIM",
+    "BTN_REPEAT_PAYMENT", "BTN_CHOOSE_ANOTHER_PLAN",
+    "BTN_PAY_SUPPORT", "BTN_SUPPORT", "BTN_FAQ",
+    "DEMO_PAYMENT_HEADER", "DEMO_PAYMENT_NOTE", "DEMO_PAYMENT_CREATED",
+    "DEMO_PAYMENT_CONFIRMED", "DEMO_PAYMENT_REJECTED",
+    "BTN_MY_REF_LINK", "BTN_HOW_IT_WORKS",
+    "BTN_REF_COPY", "BTN_REF_SHARE",
+    "BTN_REF_SPEND_20", "BTN_REF_SPEND_50", "BTN_REF_SPEND_UNLIM", "BTN_REF_WITHDRAW",
+    "BTN_WHY_ASK", "BTN_SET_LATER", "BTN_SET_NOW", "BTN_CHANGE_CODE", "BTN_CHECK_THIS_CODE",
+    # basics/errors
+    "hint_send_code", "invalid_input_non_digits", "err_need_digits_3_7",
+    "too_many_requests", "throttle_msg",
+    # plans/payments
+    "plans_list", "paywall_no_checks", "payment_success",
+    "payment_incomplete", "payment_timeout", "payment_failed_try_again", "refund_processed",
+    # free/reactivation
+    "free_pack_status", "nudge_enter_code", "free_expiring_24h",
+    "free_low_left", "payment_abandoned", "inactive_with_active_subscription",
+    "winback_no_activity", "unlim_cap_hit_today",
+    # status/profile
+    "status_line_metered_exact", "profile_overview_metered_exact",
+    "status_line_unlim", "profile_overview_unlim",
+    # referral
+    "ref_header", "ref_link_block", "ref_level_block", "ref_earnings_block",
+    "ref_spend_withdraw_block", "ref_how_it_works", "ref_levels_table",
+    "wallet_only_in_referral_notice", "ref_balance_only_here_notice",
+    # company ati
+    "company_ati_ask", "company_ati_why", "company_ati_saved",
+    "company_ati_later", "company_ati_banner_not_set", "company_ati_change_confirm",
+    # history/help
+    "history_header", "history_item_line", "history_no_more", "history_empty", "history_empty_hint",
+    "help_main", "faq_text", "support_pretext",
+    # reports
+    "report_a", "report_b", "report_c", "report_d", "report_e",
 ]

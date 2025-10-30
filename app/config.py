@@ -6,11 +6,31 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-__all__ = ["AppPaths", "SubscriptionPlan", "Cfg", "load_config", "cfg"]
+__all__ = [
+    "AppPaths",
+    "SubscriptionPlan",
+    "Cfg",
+    "PostgresCfg",
+    "PG",
+    "RUN_MIGRATIONS",
+    "DEV_CREATE_ALL",
+    "PLANS",
+    "FREE",
+    "REF_TIERS",
+    "REF_WITHDRAW_MIN_KOP",
+    "PAYMENTS_ACTIVE_PROVIDER",
+    "PAYMENTS_SANDBOX_NOTE",
+    "ADMINS",
+    "load_config",
+    "cfg",
+]
 
 _DEFAULT_BASE_DIR = Path(__file__).resolve().parents[1]
 _TRUTHY_BOOL_VALUES = {"1", "true", "yes", "on"}
 _FALSY_BOOL_VALUES = {"0", "false", "no", "off"}
+
+
+load_dotenv()
 
 
 def env_str(name: str, default: str | None = None) -> str | None:
@@ -124,6 +144,24 @@ class Cfg:
     allow_wallet_purchases_only_in_referrals: bool
 
 
+@dataclass(frozen=True)
+class PostgresCfg:
+    """PostgreSQL connection configuration."""
+
+    url: str
+
+
+PG = PostgresCfg(
+    url=os.getenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://antifraud:ANTIFRAUD_PASSWORD@127.0.0.1:5433/antifraud",
+    )
+)
+
+RUN_MIGRATIONS = os.getenv("RUN_MIGRATIONS", "1") == "1"
+DEV_CREATE_ALL = os.getenv("DEV_CREATE_ALL", "0") == "1"
+
+
 def load_config() -> Cfg:
     """Load configuration from environment variables and defaults."""
     load_dotenv()
@@ -219,6 +257,50 @@ def load_config() -> Cfg:
 
 
 cfg = load_config()
+
+PLANS: dict[str, dict[str, int]] = {
+    "p20": {
+        "checks_total": cfg.plans["p20"].checks_in_pack or 0,
+        "price_kop": cfg.plans["p20"].price_rub * 100,
+    },
+    "p50": {
+        "checks_total": cfg.plans["p50"].checks_in_pack or 0,
+        "price_kop": cfg.plans["p50"].price_rub * 100,
+    },
+    "unlim": {
+        "day_cap": cfg.plans["unlim"].daily_cap or 0,
+        "price_kop": cfg.plans["unlim"].price_rub * 100,
+    },
+}
+
+FREE: dict[str, int] = {
+    "total": cfg.free_count,
+    "ttl_hours": cfg.free_ttl_hours,
+}
+
+REF_TIERS: list[dict[str, int]] = [
+    {"min_paid": 0, "percent": 10},
+    {"min_paid": 3, "percent": 20},
+    {"min_paid": 10, "percent": 30},
+    {"min_paid": 25, "percent": 40},
+    {"min_paid": 50, "percent": 50},
+]
+
+REF_WITHDRAW_MIN_KOP: int = 500_00
+
+PAYMENTS_ACTIVE_PROVIDER: str = env_str("PAYMENTS_ACTIVE_PROVIDER", "sandbox") or "sandbox"
+PAYMENTS_SANDBOX_NOTE: str = (
+    env_str(
+        "PAYMENTS_SANDBOX_NOTE",
+        (
+            "Демонстрационный режим оплаты: списаний не будет. "
+            "Для завершения теста выберите «Оплата прошла (демо)» или «Оплата не прошла (демо)»."
+        ),
+    )
+    or ""
+)
+
+ADMINS: set[int] = set(cfg.admin_ids)
 
 # Example usage:
 # from app.config import cfg
