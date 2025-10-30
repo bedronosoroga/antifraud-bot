@@ -18,6 +18,8 @@ __all__ = [
     "FREE",
     "REF_TIERS",
     "REF_WITHDRAW_MIN_KOP",
+    "PAYMENTS_ACTIVE_PROVIDER",
+    "PAYMENTS_SANDBOX_NOTE",
     "load_config",
     "cfg",
 ]
@@ -284,6 +286,18 @@ REF_TIERS: list[dict[str, int]] = [
 ]
 
 REF_WITHDRAW_MIN_KOP: int = 500_00
+
+PAYMENTS_ACTIVE_PROVIDER: str = env_str("PAYMENTS_ACTIVE_PROVIDER", "sandbox") or "sandbox"
+PAYMENTS_SANDBOX_NOTE: str = (
+    env_str(
+        "PAYMENTS_SANDBOX_NOTE",
+        (
+            "Демонстрационный режим оплаты: списаний не будет. "
+            "Для завершения теста выберите «Оплата прошла (демо)» или «Оплата не прошла (демо)»."
+        ),
+    )
+    or ""
+)
 
 # Example usage:
 # from app.config import cfg

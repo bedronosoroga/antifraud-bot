@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional, TypedDict
 
-from app.config import PLANS
+from app.config import PAYMENTS_ACTIVE_PROVIDER, PLANS
 from app.core import db as dal
 from app.domain.referrals import service as refs
 from app.domain.subs import service as subs
@@ -41,9 +41,27 @@ class RejectResult(TypedDict):
     reason: Optional[str]
 
 
-async def create_payment(uid: int, plan: PlanName, *, metadata: Optional[dict] = None) -> PaymentInit:
+def is_sandbox_provider(provider: Optional[str]) -> bool:
+    """Return True if the provided provider (or active provider) is sandbox."""
+
+    if provider is None:
+        provider = PAYMENTS_ACTIVE_PROVIDER
+    return provider == "sandbox"
+
+
+async def create_payment(
+    uid: int,
+    plan: PlanName,
+    *,
+    provider: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> PaymentInit:
     if plan not in PLANS:
         raise ValueError(f"unknown plan '{plan}'")
+
+    provider_name = provider or PAYMENTS_ACTIVE_PROVIDER
+    payload_metadata = dict(metadata or {})
+    payload_metadata.setdefault("provider", provider_name)
 
     price_kop = int(PLANS[plan]["price_kop"])
     payload = await dal.create_pending_payment(
@@ -51,7 +69,7 @@ async def create_payment(uid: int, plan: PlanName, *, metadata: Optional[dict] =
         plan=plan,
         amount_kop=price_kop,
         provider_invoice_id=None,
-        metadata=metadata or {},
+        metadata=payload_metadata,
     )
 
     return PaymentInit(
@@ -60,7 +78,7 @@ async def create_payment(uid: int, plan: PlanName, *, metadata: Optional[dict] =
         plan=plan,
         amount_kop=price_kop,
         status=payload["status"],
-        provider="manual",
+        provider=provider_name,
         provider_invoice_id=payload.get("provider_invoice_id"),
         metadata=payload.get("metadata") or {},
     )
@@ -179,6 +197,7 @@ __all__ = [
     "ConfirmResult",
     "RejectResult",
     "create_payment",
+    "is_sandbox_provider",
     "confirm_payment",
     "reject_payment",
 ]

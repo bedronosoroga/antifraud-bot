@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.config import cfg
+from app.config import cfg, PAYMENTS_SANDBOX_NOTE
 
 
 def _plural(n: int, one: str, few: str, many: str) -> str:
@@ -104,6 +104,11 @@ BTN_BUY_UNLIM = "Купить Безлимит"
 BTN_REPEAT_PAYMENT = "Повторить оплату"
 BTN_CHOOSE_ANOTHER_PLAN = "Выбрать другой план"
 BTN_PAY_SUPPORT = "В поддержку"
+DEMO_PAYMENT_HEADER = "Оплата (демо)"
+DEMO_PAYMENT_NOTE = PAYMENTS_SANDBOX_NOTE
+DEMO_PAYMENT_CREATED = "Заказ создан. Для теста подтвердите или отмените оплату."
+DEMO_PAYMENT_CONFIRMED = "✅ Оплата подтверждена (демо). Доступ активирован."
+DEMO_PAYMENT_REJECTED = "❌ Оплата отклонена (демо). Попробуйте снова."
 
 # Поддержка/FAQ
 BTN_SUPPORT = "Написать нам"
@@ -617,6 +622,8 @@ __all__ = [
     "BTN_BUY_P20", "BTN_BUY_P50", "BTN_BUY_UNLIM",
     "BTN_REPEAT_PAYMENT", "BTN_CHOOSE_ANOTHER_PLAN",
     "BTN_PAY_SUPPORT", "BTN_SUPPORT", "BTN_FAQ",
+    "DEMO_PAYMENT_HEADER", "DEMO_PAYMENT_NOTE", "DEMO_PAYMENT_CREATED",
+    "DEMO_PAYMENT_CONFIRMED", "DEMO_PAYMENT_REJECTED",
     "BTN_MY_REF_LINK", "BTN_HOW_IT_WORKS",
     "BTN_REF_COPY", "BTN_REF_SHARE",
     "BTN_REF_SPEND_20", "BTN_REF_SPEND_50", "BTN_REF_SPEND_UNLIM", "BTN_REF_WITHDRAW",

@@ -7,7 +7,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 
 from app import texts
-from app.bot.keyboards import kb_after_report, kb_main
+from app.keyboards import kb_after_report, kb_main
 from app.domain.checks.service import CheckerService
 from app.domain.checks.formatter import build_report_text
 from app.domain.onboarding.free import FreeService

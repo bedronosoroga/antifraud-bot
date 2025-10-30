@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from aiogram import Router, F
 from aiogram.filters import CommandStart
@@ -9,7 +9,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery
 
+from app.config import PAYMENTS_ACTIVE_PROVIDER
 from app.domain.onboarding.free import FreeService
+from app.domain.payments import sandbox as sandbox_pay
+from app.domain.subs import service as subs_service
 from app.texts import (
     hint_send_code, err_need_digits_3_7,
     plans_list,
@@ -19,12 +22,15 @@ from app.texts import (
     company_ati_ask, company_ati_why, company_ati_saved, company_ati_later,
     history_header, history_item_line, history_no_more, history_empty, history_empty_hint,
     help_main, faq_text, support_pretext,
+    DEMO_PAYMENT_HEADER, DEMO_PAYMENT_NOTE, DEMO_PAYMENT_CREATED,
+    DEMO_PAYMENT_CONFIRMED, DEMO_PAYMENT_REJECTED,
 )
 from app.keyboards import (
     kb_main, kb_after_report, kb_plans_buy, kb_payment_retry, kb_history, kb_help,
     kb_profile, kb_settings, kb_referral,
     kb_company_ati_ask, kb_company_ati_saved,
     kb_back_to_menu, kb_support_minimal,
+    kb_sandbox_plans, kb_sandbox_checkout,
 )
 
 public_router = Router(name="public")
@@ -56,6 +62,31 @@ def _is_digits_1_7(text: str) -> bool:
 
     t = (text or "").strip()
     return t.isdigit() and 1 <= len(t) <= 7
+
+
+def _format_sub_status(status: subs_service.SubInfo) -> str:
+    plan = status.get("plan") or "none"
+    if plan == "none":
+        return "Подписка не активна."
+
+    parts = []
+    expires_at_ts = status.get("expires_at_ts")
+    if expires_at_ts:
+        expires_dt = datetime.fromtimestamp(float(expires_at_ts), tz=timezone.utc)
+        parts.append(f"Действует до {expires_dt.strftime('%d.%m.%Y')}")
+
+    if plan in {"p20", "p50"}:
+        checks_left = status.get("checks_left")
+        if checks_left is not None:
+            parts.append(f"Осталось проверок: {checks_left}")
+    elif plan == "unlim":
+        day_cap_left = status.get("day_cap_left")
+        if day_cap_left is not None:
+            parts.append(f"Остаток на сегодня: {day_cap_left}")
+
+    if not parts:
+        parts.append("Подписка активна.")
+    return "\n".join(parts)
 
 
 @public_router.message(CommandStart())
@@ -96,6 +127,9 @@ async def on_subs(query: CallbackQuery) -> None:
     """m:subs → показать список планов и кнопки покупки."""
 
     await query.answer()
+    if PAYMENTS_ACTIVE_PROVIDER == "sandbox":
+        await query.message.edit_text(plans_list(), reply_markup=kb_sandbox_plans())
+        return
     await query.message.edit_text(plans_list(), reply_markup=kb_plans_buy())
 
 
@@ -115,6 +149,86 @@ async def on_pay_repeat(query: CallbackQuery) -> None:
     """pay:repeat → повторная попытка оплаты (заглушка)."""
 
     await query.answer("Повторяем…")
+
+
+@public_router.callback_query(F.data.startswith("pay:sbox:init:"))
+async def on_sandbox_init(query: CallbackQuery) -> None:
+    """pay:sbox:init:<plan> → запускаем демо-оплату."""
+
+    await query.answer()
+    if query.from_user is None:
+        await query.message.edit_text("Не удалось создать заказ.", reply_markup=kb_back_to_menu())
+        return
+    plan = query.data.split(":")[-1]
+    if plan not in {"p20", "p50", "unlim"}:
+        await query.message.edit_text("Неизвестный план.", reply_markup=kb_back_to_menu())
+        return
+    payment = await sandbox_pay.start_demo_checkout(query.from_user.id, plan)
+    note_parts = [
+        DEMO_PAYMENT_HEADER,
+        DEMO_PAYMENT_NOTE,
+        DEMO_PAYMENT_CREATED,
+    ]
+    await query.message.edit_text(
+        "\n\n".join(part for part in note_parts if part),
+        reply_markup=kb_sandbox_checkout(payment["payment_id"]),
+    )
+
+
+@public_router.callback_query(F.data.startswith("pay:sbox:ok:"))
+async def on_sandbox_ok(query: CallbackQuery) -> None:
+    """pay:sbox:ok:<payment_id> → подтверждаем демо-оплату."""
+
+    await query.answer()
+    payment_id = query.data.split(":")[-1]
+    result = await sandbox_pay.simulate_success(payment_id)
+    if not result["ok"]:
+        reason = result.get("reason") or "error"
+        await query.message.edit_text(
+            f"Не удалось подтвердить оплату: {reason}",
+            reply_markup=kb_back_to_menu(),
+        )
+        return
+
+    if query.from_user is None:
+        await query.message.edit_text(
+            DEMO_PAYMENT_CONFIRMED,
+            reply_markup=kb_back_to_menu(),
+        )
+        return
+
+    status = await subs_service.get_status(query.from_user.id)
+    summary = _format_sub_status(status)
+
+    parts = [DEMO_PAYMENT_CONFIRMED, summary]
+    if result.get("need_company_ati_capture"):
+        parts.append(company_ati_ask())
+
+    await query.message.edit_text(
+        "\n\n".join(parts),
+        reply_markup=kb_back_to_menu(),
+    )
+
+
+@public_router.callback_query(F.data.startswith("pay:sbox:fail:"))
+async def on_sandbox_fail(query: CallbackQuery) -> None:
+    """pay:sbox:fail:<payment_id> → отменяем демо-оплату."""
+
+    await query.answer()
+    payment_id = query.data.split(":")[-1]
+    result = await sandbox_pay.simulate_failure(payment_id, reason="demo")
+    if not result["ok"]:
+        reason = result.get("reason") or "error"
+        await query.message.edit_text(
+            f"Не удалось отменить оплату: {reason}",
+            reply_markup=kb_back_to_menu(),
+        )
+        return
+
+    await query.message.edit_text(
+        DEMO_PAYMENT_REJECTED,
+        reply_markup=kb_back_to_menu(),
+    )
 
 
 @public_router.callback_query(F.data == "pay:choose")
