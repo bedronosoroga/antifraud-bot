@@ -109,6 +109,11 @@ DEMO_PAYMENT_NOTE = PAYMENTS_SANDBOX_NOTE
 DEMO_PAYMENT_CREATED = "Заказ создан. Для теста подтвердите или отмените оплату."
 DEMO_PAYMENT_CONFIRMED = "✅ Оплата подтверждена (демо). Доступ активирован."
 DEMO_PAYMENT_REJECTED = "❌ Оплата отклонена (демо). Попробуйте снова."
+SUB_EXPIRY_D3 = "Через 3 дня закончится доступ. Продлите, чтобы не потерять проверки."
+SUB_EXPIRY_D1 = "Остался 1 день до окончания доступа. Продлите, чтобы продолжать проверки."
+SUB_EXPIRED = "Доступ закончился. Оплатите план, чтобы снова проверять коды."
+TRIAL_EXPIRY_D1 = "Ваши бесплатные проверки закончатся завтра. Если понравилось — подключите план."
+TRIAL_EXPIRY_3H = "До конца бесплатных проверок осталось около 3 часов. Успейте попробовать или подключите план."
 
 # Поддержка/FAQ
 BTN_SUPPORT = "Написать нам"
@@ -638,6 +643,8 @@ __all__ = [
     "free_pack_status", "nudge_enter_code", "free_expiring_24h",
     "free_low_left", "payment_abandoned", "inactive_with_active_subscription",
     "winback_no_activity", "unlim_cap_hit_today",
+    "SUB_EXPIRY_D3", "SUB_EXPIRY_D1", "SUB_EXPIRED",
+    "TRIAL_EXPIRY_D1", "TRIAL_EXPIRY_3H",
     # status/profile
     "status_line_metered_exact", "profile_overview_metered_exact",
     "status_line_unlim", "profile_overview_unlim",

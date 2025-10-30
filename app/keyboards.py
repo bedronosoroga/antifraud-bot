@@ -5,6 +5,7 @@ from typing import Iterable, List
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app import texts
+from app.config import PAYMENTS_ACTIVE_PROVIDER
 
 
 def _kb(rows: Iterable[Iterable[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
@@ -220,6 +221,12 @@ def kb_sandbox_checkout(payment_id: str) -> InlineKeyboardMarkup:
     )
 
 
+def plans_kb_for_provider() -> InlineKeyboardMarkup:
+    if PAYMENTS_ACTIVE_PROVIDER == "sandbox":
+        return kb_sandbox_plans()
+    return kb_plans_buy()
+
+
 __all__ = [
     "kb_main",
     "kb_after_report",
@@ -236,4 +243,5 @@ __all__ = [
     "kb_support_minimal",
     "kb_sandbox_plans",
     "kb_sandbox_checkout",
+    "plans_kb_for_provider",
 ]
