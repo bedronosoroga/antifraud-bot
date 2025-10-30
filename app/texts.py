@@ -149,10 +149,16 @@ def invalid_input_non_digits() -> str:
     return "Похоже, это не цифры. Отправьте только номер."
 
 
+def err_need_digits_upto_7() -> str:
+    """Сообщает о неверной длине кода (до 7 цифр)."""
+
+    return "Нужно до 7 цифр. Попробуйте ещё раз."
+
+
 def err_need_digits_3_7() -> str:
     """Сообщает о неверной длине кода."""
 
-    return "Нужно до 7 цифр. Попробуйте ещё раз."
+    return err_need_digits_upto_7()
 
 
 def too_many_requests() -> str:
@@ -504,7 +510,7 @@ def company_ati_change_confirm(new_code: str) -> str:
 def history_header() -> str:
     """Заголовок истории проверок."""
 
-    return "История проверок"
+    return "История действий"
 
 
 def history_item_line(status_emoji: str, ati: str, dt: str) -> str:
@@ -522,13 +528,13 @@ def history_no_more() -> str:
 def history_empty() -> str:
     """Сообщение о пустой истории."""
 
-    return "Пока нет проверок."
+    return "Пока нет действий."
 
 
 def history_empty_hint() -> str:
     """Подсказка при пустой истории."""
 
-    return "Пока нет проверок.\nПришлите код АТИ (до 7 цифр) — проверим сразу."
+    return "Пришлите код АТИ (до 7 цифр) — проверим сразу."
 
 
 def help_main() -> str:
@@ -541,12 +547,46 @@ def faq_text() -> str:
     """Ответы на часто задаваемые вопросы."""
 
     tz = getattr(cfg, "tz", "Europe/Moscow")
+    free_total = getattr(cfg, "free_count", 5)
+    free_hours = getattr(cfg, "free_ttl_hours", 72)
+    free_days = max(1, round(free_hours / 24))
+    free_days_word = _plural(free_days, "день", "дня", "дней")
+
+    plan_descriptions: list[str] = []
+    plan_p20 = cfg.plans.get("p20")
+    plan_p50 = cfg.plans.get("p50")
+    plan_unlim = cfg.plans.get("unlim")
+
+    if plan_p20 is not None and plan_p20.checks_in_pack:
+        plan_descriptions.append(
+            f"{plan_p20.checks_in_pack} проверок — {fmt_rub(plan_p20.price_rub)}"
+        )
+    if plan_p50 is not None and plan_p50.checks_in_pack:
+        plan_descriptions.append(
+            f"{plan_p50.checks_in_pack} проверок — {fmt_rub(plan_p50.price_rub)}"
+        )
+    if plan_unlim is not None:
+        cap_suffix = (
+            f" (до {plan_unlim.daily_cap} в сутки)" if plan_unlim.daily_cap else ""
+        )
+        plan_descriptions.append(
+            f"{plan_unlim.title} — {fmt_rub(plan_unlim.price_rub)}{cap_suffix}"
+        )
+
+    plans_line = "; ".join(plan_descriptions) if plan_descriptions else "Планы можно выбрать в чате."
+    free_line = f"{free_total} проверок на {free_days} {free_days_word}"
+    unlim_cap = plan_unlim.daily_cap if plan_unlim is not None else None
+    unlim_line = (
+        f"До {unlim_cap} проверок в сутки" if unlim_cap else "Безлимит доступен круглосуточно"
+    )
+
     return (
         "Вопросы и ответы:\n"
         "• Как сделать проверку? — Пришлите код АТИ (до 7 цифр) в чат, и мы сразу дадим отчёт.\n"
         "• Что делать, если проверок не осталось? — Выберите и оплатите план. Всё занимает минуту.\n"
-        "• Как работают бесплатные проверки? — Новым пользователям выдаётся 5 проверок на 3 дня.\n"
-        f"• Как работает безлимит? — До 50 проверок в сутки, счётчик обнуляется в 00:00 ({tz}).\n"
+        f"• Какие планы доступны? — {plans_line}.\n"
+        f"• Как работают бесплатные проверки? — Новым пользователям выдаётся {free_line}.\n"
+        f"• Как работает безлимит? — {unlim_line}, счётчик обнуляется в 00:00 ({tz}).\n"
         "• Как оплатить из баланса? — Это возможно только в разделе «Пригласить и заработать».\n"
         "• Как изменить код АТИ компании? — Профиль → Настройки."
     )
@@ -634,7 +674,7 @@ __all__ = [
     "BTN_REF_SPEND_20", "BTN_REF_SPEND_50", "BTN_REF_SPEND_UNLIM", "BTN_REF_WITHDRAW",
     "BTN_WHY_ASK", "BTN_SET_LATER", "BTN_SET_NOW", "BTN_CHANGE_CODE", "BTN_CHECK_THIS_CODE",
     # basics/errors
-    "hint_send_code", "invalid_input_non_digits", "err_need_digits_3_7",
+    "hint_send_code", "invalid_input_non_digits", "err_need_digits_upto_7", "err_need_digits_3_7",
     "too_many_requests", "throttle_msg",
     # plans/payments
     "plans_list", "paywall_no_checks", "payment_success",

@@ -25,6 +25,7 @@ from sqlalchemy import (
     Text,
     String,
     insert,
+    literal,
     delete,
     select,
     text,
@@ -33,6 +34,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import IntegrityError
 
 from app.config import DEV_CREATE_ALL, PG, RUN_MIGRATIONS
 
@@ -361,11 +363,48 @@ async def append_history(
         )
 
 
-async def get_history(uid: int, *, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
-    stmt = (
-        select(history)
+def _history_events_subquery(uid: int):
+    check_stmt = (
+        select(
+            literal("check").label("type"),
+            history.c.ts.label("ts"),
+            history.c.uid.label("uid"),
+            history.c.ati.label("ati"),
+            history.c.report_type.label("report_type"),
+            history.c.lin.label("lin"),
+            history.c.exp.label("exp"),
+            literal(None).label("plan"),
+            literal(None).label("amount_kop"),
+        )
         .where(history.c.uid == uid)
-        .order_by(history.c.ts.desc())
+    )
+
+    payment_stmt = (
+        select(
+            literal("payment").label("type"),
+            pending_payments.c.created_at.label("ts"),
+            pending_payments.c.uid.label("uid"),
+            literal(None).label("ati"),
+            literal(None).label("report_type"),
+            literal(None).label("lin"),
+            literal(None).label("exp"),
+            pending_payments.c.plan.label("plan"),
+            pending_payments.c.amount_kop.label("amount_kop"),
+        )
+        .where(pending_payments.c.uid == uid)
+        .where(pending_payments.c.status == "confirmed")
+    )
+
+    return check_stmt.union_all(payment_stmt).subquery()
+
+
+async def get_history(uid: int, *, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    events_subq = _history_events_subquery(uid)
+    stmt = (
+        select(events_subq)
+        .order_by(events_subq.c.ts.desc())
         .limit(limit)
         .offset(offset)
     )
@@ -375,10 +414,10 @@ async def get_history(uid: int, *, limit: int = 10, offset: int = 0) -> list[dic
 
 
 async def count_history(uid: int) -> int:
+    events_subq = _history_events_subquery(uid)
+    stmt = select(func.count()).select_from(events_subq)
     async with Session() as session:
-        result = await session.execute(
-            select(func.count()).select_from(history).where(history.c.uid == uid)
-        )
+        result = await session.execute(stmt)
         return int(result.scalar_one())
 
 
@@ -943,6 +982,7 @@ async def list_paid_subs_expiring_between(ts_from: datetime, ts_to: datetime) ->
         .where(subs.c.expires_at.is_not(None))
         .where(subs.c.expires_at >= start)
         .where(subs.c.expires_at < end)
+        .order_by(subs.c.expires_at.asc())
     )
     async with Session() as session:
         result = await session.execute(stmt)
@@ -970,6 +1010,7 @@ async def list_trials_expiring_between(ts_from: datetime, ts_to: datetime) -> li
         .join(users, users.c.id == free_grants.c.uid)
         .where(free_grants.c.expires_at >= start)
         .where(free_grants.c.expires_at < end)
+        .order_by(free_grants.c.expires_at.asc())
     )
     async with Session() as session:
         result = await session.execute(stmt)
@@ -1004,13 +1045,12 @@ async def notif_was_sent(uid: int, kind: str, day: datetime) -> bool:
 
 async def mark_notif_sent(uid: int, kind: str, when: datetime) -> None:
     sent_at = _ensure_datetime_utc(when)
-    stmt = (
-        pg_insert(user_notifications)
-        .values(uid=uid, kind=kind, sent_at=sent_at)
-        .on_conflict_do_nothing(constraint="uq_un_uid_kind_day")
-    )
+    stmt = pg_insert(user_notifications).values(uid=uid, kind=kind, sent_at=sent_at)
     async with Session() as session, session.begin():
-        await session.execute(stmt)
+        try:
+            await session.execute(stmt)
+        except IntegrityError:
+            pass
 
 
 async def rl_prune_before(ts: datetime) -> int:

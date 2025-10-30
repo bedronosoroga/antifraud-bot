@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Iterable, Optional
 
 from aiogram import Router, F
 from aiogram.filters import CommandStart
@@ -9,12 +10,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery
 
-from app.config import PAYMENTS_ACTIVE_PROVIDER
+from app.config import PAYMENTS_ACTIVE_PROVIDER, cfg
+from app.core import db as dal
 from app.domain.onboarding.free import FreeService
 from app.domain.payments import sandbox as sandbox_pay
 from app.domain.subs import service as subs_service
 from app.texts import (
-    hint_send_code, err_need_digits_3_7,
+    hint_send_code, err_need_digits_upto_7,
     plans_list,
     ref_header, ref_link_block, ref_level_block, ref_earnings_block,
     ref_spend_withdraw_block, ref_how_it_works, ref_levels_table,
@@ -24,6 +26,7 @@ from app.texts import (
     help_main, faq_text, support_pretext,
     DEMO_PAYMENT_HEADER, DEMO_PAYMENT_NOTE, DEMO_PAYMENT_CREATED,
     DEMO_PAYMENT_CONFIRMED, DEMO_PAYMENT_REJECTED,
+    fmt_rub,
 )
 from app.keyboards import (
     kb_main, kb_after_report, kb_plans_buy, kb_payment_retry, kb_history, kb_help,
@@ -34,6 +37,9 @@ from app.keyboards import (
 )
 
 public_router = Router(name="public")
+
+
+HISTORY_PAGE_SIZE = 10
 
 
 class _OnboardingRuntime:
@@ -89,13 +95,84 @@ def _format_sub_status(status: subs_service.SubInfo) -> str:
     return "\n".join(parts)
 
 
+_REPORT_EMOJI = {
+    "A": "🟢",
+    "B": "🟡",
+    "C": "🟠",
+    "D": "🔴",
+    "E": "⚪️",
+}
+
+
+def _plan_title(plan_code: Optional[str]) -> str:
+    if not plan_code:
+        return "Платёж"
+    plan = cfg.plans.get(plan_code)
+    if plan is None:
+        return plan_code
+    return plan.title
+
+
+def _format_amount_kop(amount_kop: Optional[int]) -> str:
+    if amount_kop is None:
+        return ""
+    amount_kop = int(amount_kop)
+    rub, kop = divmod(amount_kop, 100)
+    if kop == 0:
+        return fmt_rub(rub)
+    return f"{rub}.{kop:02d} ₽"
+
+
+def _format_dt(ts: datetime) -> str:
+    if not isinstance(ts, datetime):
+        return str(ts)
+    return ts.astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M")
+
+
+def _render_history(items: Iterable[dict], page: int) -> str:
+    title = history_header()
+    if page > 1:
+        title = f"{title} (стр. {page})"
+    lines = [title]
+    for item in items:
+        event_type = item.get("type")
+        ts = item.get("ts")
+        dt_str = _format_dt(ts) if ts is not None else ""
+        if event_type == "payment":
+            plan_code = item.get("plan")
+            title_text = _plan_title(plan_code)
+            amount_text = _format_amount_kop(item.get("amount_kop"))
+            if amount_text:
+                label = f"{title_text} ({amount_text})"
+            else:
+                label = title_text
+            lines.append(history_item_line("💳", label, dt_str))
+        else:
+            report_type = item.get("report_type")
+            emoji = _REPORT_EMOJI.get(report_type, "📄")
+            label = item.get("ati") or "—"
+            lines.append(history_item_line(emoji, label, dt_str))
+    return "\n".join(lines)
+
+
 @public_router.message(CommandStart())
 async def on_start(message: Message, state: FSMContext) -> None:
     """/start → показать подсказку и главное меню."""
 
+    from_user = message.from_user
+    if from_user is not None:
+        try:
+            await dal.ensure_user(
+                from_user.id,
+                from_user.username,
+                from_user.first_name,
+                from_user.last_name,
+            )
+        except Exception:
+            logging.exception("ensure_user failed for /start")
+
     try:
         if _onb.free is not None:
-            from_user = message.from_user
             if from_user is not None:
                 _onb.free.ensure_pack(from_user.id, datetime.now())
     except Exception:
@@ -249,31 +326,69 @@ async def on_pay_support(query: CallbackQuery) -> None:
 
 @public_router.callback_query(F.data == "m:history")
 async def on_history(query: CallbackQuery) -> None:
-    """m:history → список последних проверок (заглушка)."""
+    """m:history → показать историю действий пользователя."""
 
     await query.answer()
-    items: list[tuple[str, str, str]] = []
-    if not items:
+    user = query.from_user
+    if user is None:
         await query.message.edit_text(
-            f"{history_empty()}\n{history_empty_hint()}",
-            reply_markup=kb_back_to_menu()
+            history_empty(),
+            reply_markup=kb_back_to_menu(),
         )
         return
-    lines = [history_header()] + [history_item_line(e, a, d) for (e, a, d) in items]
-    await query.message.edit_text("\n".join(lines), reply_markup=kb_history(paginated=True))
+
+    uid = user.id
+    total = await dal.count_history(uid)
+    if total == 0:
+        await query.message.edit_text(
+            f"{history_empty()}\n{history_empty_hint()}",
+            reply_markup=kb_back_to_menu(),
+        )
+        return
+
+    items = await dal.get_history(uid, limit=HISTORY_PAGE_SIZE, offset=0)
+    text = _render_history(items, page=1)
+    await query.message.edit_text(
+        text,
+        reply_markup=kb_history(page=1, page_size=HISTORY_PAGE_SIZE, total=total),
+    )
 
 
-@public_router.callback_query(F.data == "hist:more")
+@public_router.callback_query(F.data.startswith("hist:more:"))
 async def on_history_more(query: CallbackQuery) -> None:
-    """hist:more → следующая страница истории (заглушка)."""
+    """hist:more:<page> → следующая страница истории."""
 
-    await query.answer()
-    more: list[tuple[str, str, str]] = []
-    if not more:
+    user = query.from_user
+    if user is None:
         await query.message.edit_text(history_no_more(), reply_markup=kb_back_to_menu())
         return
-    lines = [history_item_line(e, a, d) for (e, a, d) in more]
-    await query.message.edit_text("\n".join(lines), reply_markup=kb_history(paginated=True))
+
+    try:
+        page = int(query.data.split(":")[-1])
+    except (ValueError, AttributeError):
+        await query.message.edit_text(history_no_more(), reply_markup=kb_back_to_menu())
+        return
+
+    if page < 1:
+        page = 1
+
+    offset = (page - 1) * HISTORY_PAGE_SIZE
+    total = await dal.count_history(user.id)
+    if offset >= total:
+        await query.answer(history_no_more(), show_alert=True)
+        return
+
+    items = await dal.get_history(user.id, limit=HISTORY_PAGE_SIZE, offset=offset)
+    if not items:
+        await query.answer(history_no_more(), show_alert=True)
+        return
+
+    await query.answer()
+    text = _render_history(items, page=page)
+    await query.message.edit_text(
+        text,
+        reply_markup=kb_history(page=page, page_size=HISTORY_PAGE_SIZE, total=total),
+    )
 
 
 @public_router.callback_query(F.data == "m:help")
@@ -312,9 +427,9 @@ async def _render_settings(query: CallbackQuery, state: FSMContext) -> None:
         "Настройки",
         reply_markup=kb_settings(
             notif_payments=notif_pay,
-            notif_ref=notif_ref,
+            notif_referrals=notif_ref,
             mask_history=mask_hist,
-            post_report_action=post_action,
+            post_action=post_action,
         )
     )
 
@@ -447,13 +562,26 @@ async def on_company_ati_change(query: CallbackQuery, state: FSMContext) -> None
 async def on_company_ati_code_input(message: Message, state: FSMContext) -> None:
     """FSM: ждём код до 7 цифр, валидируем и сохраняем."""
 
-    code = (message.text or "").strip()
-    if not _is_digits_1_7(code):
-        await message.answer(err_need_digits_3_7())
+    raw = (message.text or "").strip()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if not digits or len(digits) > 7:
+        await message.answer(err_need_digits_upto_7())
         return
-    await state.update_data(company_ati_code=code)
+
+    user = message.from_user
+    if user is None:
+        await message.answer("Не удалось сохранить код. Попробуйте ещё раз.")
+        return
+
+    try:
+        await dal.set_company_ati(user.id, digits)
+    except Exception:
+        logging.exception("failed to set company ATI for user %s", user.id)
+        await message.answer("Не удалось сохранить код. Попробуйте ещё раз позже.")
+        return
+
     await state.clear()
-    await message.answer(company_ati_saved(code), reply_markup=kb_company_ati_saved())
+    await message.answer(company_ati_saved(digits), reply_markup=kb_company_ati_saved())
 
 
 @public_router.callback_query(F.data == "ati:check")

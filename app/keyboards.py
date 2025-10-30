@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -56,12 +56,18 @@ def kb_payment_retry() -> InlineKeyboardMarkup:
     )
 
 
-def kb_history(*, paginated: bool = False) -> InlineKeyboardMarkup:
-    rows: List[List[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")]
-    ]
-    if paginated:
-        rows.insert(0, [InlineKeyboardButton(text=texts.BTN_MORE, callback_data="hist:more")])
+def kb_history(*, page: int = 1, page_size: int = 10, total: Optional[int] = None) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    if total is not None and page * page_size < total:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.BTN_MORE,
+                    callback_data=f"hist:more:{page + 1}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")])
     return _kb(rows)
 
 
