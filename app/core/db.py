@@ -25,6 +25,7 @@ from sqlalchemy import (
     Text,
     String,
     insert,
+    delete,
     select,
     text,
     update,
@@ -140,6 +141,17 @@ free_grants = Table(
     Column("used", Integer, nullable=False, server_default=text("0")),
 )
 
+rate_limit_hits = Table(
+    "rate_limit_hits",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("uid", BigInteger, nullable=False),
+    Column("scope", Text, nullable=False),
+    Column("ts", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+)
+
+Index("idx_rl_uid_scope_ts", rate_limit_hits.c.uid, rate_limit_hits.c.scope, rate_limit_hits.c.ts.desc())
+
 engine = create_async_engine(
     PG.url,
     pool_pre_ping=True,
@@ -204,6 +216,12 @@ def _to_date(value: Any, field: str) -> Optional[date]:
     if isinstance(value, str):
         return date.fromisoformat(value)
     raise ValueError(f"{field} must be date/str or None")
+
+
+def _ensure_datetime_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 async def init_db(run_migrations: bool = False, dev_create_all: bool = False) -> None:
@@ -844,3 +862,53 @@ async def increment_free_used(uid: int, *, now_ts: float) -> None:
         row = result.first()
         if row is None:
             raise ValueError("free grant inactive")
+
+
+async def rl_hit(uid: int, scope: str, *, at: Optional[datetime] = None) -> None:
+    ts = _ensure_datetime_utc(at) if at is not None else now_utc()
+    async with Session() as session, session.begin():
+        await session.execute(
+            insert(rate_limit_hits).values(uid=uid, scope=scope, ts=ts)
+        )
+
+
+async def rl_count_since(uid: int, scope: str, since: datetime) -> int:
+    since_dt = _ensure_datetime_utc(since)
+    stmt = (
+        select(func.count())
+        .select_from(rate_limit_hits)
+        .where(rate_limit_hits.c.uid == uid)
+        .where(rate_limit_hits.c.scope == scope)
+        .where(rate_limit_hits.c.ts >= since_dt)
+    )
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return int(result.scalar_one())
+
+
+async def rl_first_hit_since(uid: int, scope: str, since: datetime) -> Optional[datetime]:
+    since_dt = _ensure_datetime_utc(since)
+    stmt = (
+        select(rate_limit_hits.c.ts)
+        .where(rate_limit_hits.c.uid == uid)
+        .where(rate_limit_hits.c.scope == scope)
+        .where(rate_limit_hits.c.ts >= since_dt)
+        .order_by(rate_limit_hits.c.ts.asc())
+        .limit(1)
+    )
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
+async def rl_prune(before: datetime) -> int:
+    before_dt = _ensure_datetime_utc(before)
+    stmt = (
+        delete(rate_limit_hits)
+        .where(rate_limit_hits.c.ts < before_dt)
+        .returning(rate_limit_hits.c.id)
+    )
+    async with Session() as session, session.begin():
+        result = await session.execute(stmt)
+        rows = result.fetchall()
+        return len(rows)
