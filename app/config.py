@@ -20,6 +20,7 @@ __all__ = [
     "REF_WITHDRAW_MIN_KOP",
     "PAYMENTS_ACTIVE_PROVIDER",
     "PAYMENTS_SANDBOX_NOTE",
+    "ADMINS",
     "load_config",
     "cfg",
 ]
@@ -298,6 +299,8 @@ PAYMENTS_SANDBOX_NOTE: str = (
     )
     or ""
 )
+
+ADMINS: set[int] = set(cfg.admin_ids)
 
 # Example usage:
 # from app.config import cfg
