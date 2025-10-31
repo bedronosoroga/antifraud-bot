@@ -12,7 +12,6 @@ from aiogram.types import Message, CallbackQuery
 
 from app.config import PAYMENTS_ACTIVE_PROVIDER, cfg
 from app.core import db as dal
-from app.domain.onboarding.free import FreeService
 from app.domain.payments import sandbox as sandbox_pay
 from app.domain.subs import service as subs_service
 from app.texts import (
@@ -36,20 +35,20 @@ from app.keyboards import (
     kb_sandbox_plans, kb_sandbox_checkout,
 )
 
-public_router = Router(name="public")
+router = Router(name="public")
 
 
 HISTORY_PAGE_SIZE = 10
 
 
 class _OnboardingRuntime:
-    free: FreeService | None = None
+    free: object | None = None
 
 
 _onb = _OnboardingRuntime()
 
 
-def init_onboarding_runtime(*, free: FreeService | None) -> None:
+def init_onboarding_runtime(*, free: object | None) -> None:
     """
     Вызывается из main при сборке зависимостей, чтобы /start мог выдать пакет.
     """
@@ -155,7 +154,7 @@ def _render_history(items: Iterable[dict], page: int) -> str:
     return "\n".join(lines)
 
 
-@public_router.message(CommandStart())
+@router.message(CommandStart())
 async def on_start(message: Message, state: FSMContext) -> None:
     """/start → показать подсказку и главное меню."""
 
@@ -183,7 +182,7 @@ async def on_start(message: Message, state: FSMContext) -> None:
     await message.answer(plans_list(), reply_markup=kb_main())
 
 
-@public_router.callback_query(F.data == "m:menu")
+@router.callback_query(F.data == "m:menu")
 async def on_menu(query: CallbackQuery, state: FSMContext) -> None:
     """m:menu → главное меню."""
 
@@ -191,7 +190,7 @@ async def on_menu(query: CallbackQuery, state: FSMContext) -> None:
     await query.message.edit_text(hint_send_code(), reply_markup=kb_main())
 
 
-@public_router.callback_query(F.data == "chk:new")
+@router.callback_query(F.data == "chk:new")
 async def on_check_new(query: CallbackQuery, state: FSMContext) -> None:
     """chk:new → подсказать пользователю прислать код АТИ."""
 
@@ -199,7 +198,7 @@ async def on_check_new(query: CallbackQuery, state: FSMContext) -> None:
     await query.message.edit_text(hint_send_code(), reply_markup=kb_main())
 
 
-@public_router.callback_query(F.data == "m:subs")
+@router.callback_query(F.data == "m:subs")
 async def on_subs(query: CallbackQuery) -> None:
     """m:subs → показать список планов и кнопки покупки."""
 
@@ -210,7 +209,7 @@ async def on_subs(query: CallbackQuery) -> None:
     await query.message.edit_text(plans_list(), reply_markup=kb_plans_buy())
 
 
-@public_router.callback_query(F.data.in_({"pl:buy:20", "pl:buy:50", "pl:buy:unlim"}))
+@router.callback_query(F.data.in_({"pl:buy:20", "pl:buy:50", "pl:buy:unlim"}))
 async def on_plan_buy(query: CallbackQuery) -> None:
     """pl:buy:* → заглушка создания счёта на оплату."""
 
@@ -221,14 +220,14 @@ async def on_plan_buy(query: CallbackQuery) -> None:
     )
 
 
-@public_router.callback_query(F.data == "pay:repeat")
+@router.callback_query(F.data == "pay:repeat")
 async def on_pay_repeat(query: CallbackQuery) -> None:
     """pay:repeat → повторная попытка оплаты (заглушка)."""
 
     await query.answer("Повторяем…")
 
 
-@public_router.callback_query(F.data.startswith("pay:sbox:init:"))
+@router.callback_query(F.data.startswith("pay:sbox:init:"))
 async def on_sandbox_init(query: CallbackQuery) -> None:
     """pay:sbox:init:<plan> → запускаем демо-оплату."""
 
@@ -252,7 +251,7 @@ async def on_sandbox_init(query: CallbackQuery) -> None:
     )
 
 
-@public_router.callback_query(F.data.startswith("pay:sbox:ok:"))
+@router.callback_query(F.data.startswith("pay:sbox:ok:"))
 async def on_sandbox_ok(query: CallbackQuery) -> None:
     """pay:sbox:ok:<payment_id> → подтверждаем демо-оплату."""
 
@@ -287,7 +286,7 @@ async def on_sandbox_ok(query: CallbackQuery) -> None:
     )
 
 
-@public_router.callback_query(F.data.startswith("pay:sbox:fail:"))
+@router.callback_query(F.data.startswith("pay:sbox:fail:"))
 async def on_sandbox_fail(query: CallbackQuery) -> None:
     """pay:sbox:fail:<payment_id> → отменяем демо-оплату."""
 
@@ -308,7 +307,7 @@ async def on_sandbox_fail(query: CallbackQuery) -> None:
     )
 
 
-@public_router.callback_query(F.data == "pay:choose")
+@router.callback_query(F.data == "pay:choose")
 async def on_pay_choose(query: CallbackQuery) -> None:
     """pay:choose → вернуться к списку планов."""
 
@@ -316,7 +315,7 @@ async def on_pay_choose(query: CallbackQuery) -> None:
     await query.message.edit_text(plans_list(), reply_markup=kb_plans_buy())
 
 
-@public_router.callback_query(F.data == "pay:support")
+@router.callback_query(F.data == "pay:support")
 async def on_pay_support(query: CallbackQuery) -> None:
     """pay:support → мини-клавиатура поддержки."""
 
@@ -324,7 +323,7 @@ async def on_pay_support(query: CallbackQuery) -> None:
     await query.message.edit_text("Нужна помощь по оплате?", reply_markup=kb_support_minimal())
 
 
-@public_router.callback_query(F.data == "m:history")
+@router.callback_query(F.data == "m:history")
 async def on_history(query: CallbackQuery) -> None:
     """m:history → показать историю действий пользователя."""
 
@@ -354,7 +353,7 @@ async def on_history(query: CallbackQuery) -> None:
     )
 
 
-@public_router.callback_query(F.data.startswith("hist:more:"))
+@router.callback_query(F.data.startswith("hist:more:"))
 async def on_history_more(query: CallbackQuery) -> None:
     """hist:more:<page> → следующая страница истории."""
 
@@ -391,7 +390,7 @@ async def on_history_more(query: CallbackQuery) -> None:
     )
 
 
-@public_router.callback_query(F.data == "m:help")
+@router.callback_query(F.data == "m:help")
 async def on_help(query: CallbackQuery) -> None:
     """m:help → экран помощи."""
 
@@ -399,7 +398,7 @@ async def on_help(query: CallbackQuery) -> None:
     await query.message.edit_text(help_main(), reply_markup=kb_help())
 
 
-@public_router.callback_query(F.data == "sup:faq")
+@router.callback_query(F.data == "sup:faq")
 async def on_faq(query: CallbackQuery) -> None:
     """sup:faq → показать FAQ."""
 
@@ -407,7 +406,7 @@ async def on_faq(query: CallbackQuery) -> None:
     await query.message.edit_text(faq_text(), reply_markup=kb_back_to_menu())
 
 
-@public_router.callback_query(F.data == "sup:contact")
+@router.callback_query(F.data == "sup:contact")
 async def on_support_contact(query: CallbackQuery) -> None:
     """sup:contact → написать в поддержку (заглушка)."""
 
@@ -434,7 +433,7 @@ async def _render_settings(query: CallbackQuery, state: FSMContext) -> None:
     )
 
 
-@public_router.callback_query(F.data == "m:settings")
+@router.callback_query(F.data == "m:settings")
 async def on_settings(query: CallbackQuery, state: FSMContext) -> None:
     """m:settings → экран настроек."""
 
@@ -442,7 +441,7 @@ async def on_settings(query: CallbackQuery, state: FSMContext) -> None:
     await _render_settings(query, state)
 
 
-@public_router.callback_query(F.data.in_({"set:notif:pay:toggle", "set:notif:ref:toggle", "set:history:mask:toggle"}))
+@router.callback_query(F.data.in_({"set:notif:pay:toggle", "set:notif:ref:toggle", "set:history:mask:toggle"}))
 async def on_settings_toggle(query: CallbackQuery, state: FSMContext) -> None:
     """Тогглы настроек notif_pay | notif_ref | mask_hist."""
 
@@ -458,7 +457,7 @@ async def on_settings_toggle(query: CallbackQuery, state: FSMContext) -> None:
     await _render_settings(query, state)
 
 
-@public_router.callback_query(F.data.in_({"set:post:again", "set:post:menu"}))
+@router.callback_query(F.data.in_({"set:post:again", "set:post:menu"}))
 async def on_settings_post_action(query: CallbackQuery, state: FSMContext) -> None:
     """set:post:* → выбор действия после отчёта."""
 
@@ -467,7 +466,7 @@ async def on_settings_post_action(query: CallbackQuery, state: FSMContext) -> No
     await _render_settings(query, state)
 
 
-@public_router.callback_query(F.data == "m:ref")
+@router.callback_query(F.data == "m:ref")
 async def on_ref_main(query: CallbackQuery) -> None:
     """m:ref → реферальный раздел (заглушка)."""
 
@@ -493,14 +492,14 @@ async def on_ref_main(query: CallbackQuery) -> None:
     )
 
 
-@public_router.callback_query(F.data.in_({"ref:link", "ref:copy", "ref:share"}))
+@router.callback_query(F.data.in_({"ref:link", "ref:copy", "ref:share"}))
 async def on_ref_link_actions(query: CallbackQuery) -> None:
     """ref:link|copy|share → заглушки."""
 
     await query.answer("Готово.")
 
 
-@public_router.callback_query(F.data.in_({"ref:spend:20", "ref:spend:50", "ref:spend:unlim"}))
+@router.callback_query(F.data.in_({"ref:spend:20", "ref:spend:50", "ref:spend:unlim"}))
 async def on_ref_spend(query: CallbackQuery) -> None:
     """ref:spend:* → покупка из баланса (заглушка)."""
 
@@ -508,14 +507,14 @@ async def on_ref_spend(query: CallbackQuery) -> None:
     await query.message.edit_text(ref_balance_only_here_notice(), reply_markup=kb_back_to_menu())
 
 
-@public_router.callback_query(F.data == "ref:withdraw")
+@router.callback_query(F.data == "ref:withdraw")
 async def on_ref_withdraw(query: CallbackQuery) -> None:
     """ref:withdraw → заявка на вывод (заглушка)."""
 
     await query.answer("Заявка создана.")
 
 
-@public_router.callback_query(F.data == "ref:how")
+@router.callback_query(F.data == "ref:how")
 async def on_ref_how(query: CallbackQuery) -> None:
     """ref:how → подробности о работе рефералок."""
 
@@ -523,7 +522,7 @@ async def on_ref_how(query: CallbackQuery) -> None:
     await query.message.edit_text(ref_how_it_works(), reply_markup=kb_back_to_menu())
 
 
-@public_router.callback_query(F.data == "ati:set")
+@router.callback_query(F.data == "ati:set")
 async def on_company_ati_set(query: CallbackQuery, state: FSMContext) -> None:
     """ati:set → просим отправить код АТИ (до 7 цифр)."""
 
@@ -532,7 +531,7 @@ async def on_company_ati_set(query: CallbackQuery, state: FSMContext) -> None:
     await query.message.edit_text(company_ati_ask(), reply_markup=kb_company_ati_ask())
 
 
-@public_router.callback_query(F.data == "ati:why")
+@router.callback_query(F.data == "ati:why")
 async def on_company_ati_why(query: CallbackQuery) -> None:
     """ati:why → объясняем, зачем код компании."""
 
@@ -540,7 +539,7 @@ async def on_company_ati_why(query: CallbackQuery) -> None:
     await query.message.edit_text(company_ati_why(), reply_markup=kb_company_ati_ask())
 
 
-@public_router.callback_query(F.data == "ati:later")
+@router.callback_query(F.data == "ati:later")
 async def on_company_ati_later(query: CallbackQuery, state: FSMContext) -> None:
     """ati:later → указать код позже."""
 
@@ -549,7 +548,7 @@ async def on_company_ati_later(query: CallbackQuery, state: FSMContext) -> None:
     await query.message.edit_text(company_ati_later(), reply_markup=kb_back_to_menu())
 
 
-@public_router.callback_query(F.data == "ati:change")
+@router.callback_query(F.data == "ati:change")
 async def on_company_ati_change(query: CallbackQuery, state: FSMContext) -> None:
     """ati:change → смена сохранённого кода, включаем FSM."""
 
@@ -558,7 +557,7 @@ async def on_company_ati_change(query: CallbackQuery, state: FSMContext) -> None
     await query.message.edit_text("Укажите новый код АТИ (до 7 цифр).", reply_markup=kb_company_ati_ask())
 
 
-@public_router.message(CompanyATIStates.waiting_code)
+@router.message(CompanyATIStates.waiting_code)
 async def on_company_ati_code_input(message: Message, state: FSMContext) -> None:
     """FSM: ждём код до 7 цифр, валидируем и сохраняем."""
 
@@ -584,7 +583,7 @@ async def on_company_ati_code_input(message: Message, state: FSMContext) -> None
     await message.answer(company_ati_saved(digits), reply_markup=kb_company_ati_saved())
 
 
-@public_router.callback_query(F.data == "ati:check")
+@router.callback_query(F.data == "ati:check")
 async def on_company_ati_check(query: CallbackQuery, state: FSMContext) -> None:
     """ati:check → просим отправить код для проверки."""
 
@@ -592,7 +591,7 @@ async def on_company_ati_check(query: CallbackQuery, state: FSMContext) -> None:
     await query.message.edit_text(hint_send_code(), reply_markup=kb_after_report())
 
 
-@public_router.callback_query(F.data == "m:profile")
+@router.callback_query(F.data == "m:profile")
 async def on_profile(query: CallbackQuery) -> None:
     """m:profile → профиль (заглушка)."""
 
@@ -600,7 +599,7 @@ async def on_profile(query: CallbackQuery) -> None:
     await query.message.edit_text("Профиль", reply_markup=kb_profile())
 
 
-@public_router.message(F.text & ~F.text.regexp(r"^\d{1,7}$"))
+@router.message(F.text & ~F.text.regexp(r"^\d{1,7}$"))
 async def on_any_text(message: Message) -> None:
     """Любой текст → подсказка и главное меню."""
 

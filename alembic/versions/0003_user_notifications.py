@@ -37,20 +37,28 @@ def upgrade() -> None:
         ["uid", "kind"],
     )
     op.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_un_uid_kind_day "
-        "ON user_notifications (uid, kind, date_trunc('day', sent_at))"
+        sa.text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_un_uid_kind_day
+            ON user_notifications (uid, kind, ((sent_at AT TIME ZONE 'UTC')::date))
+            """
+        )
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_subs_expires_at ON subs (expires_at)"
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS idx_subs_expires_at ON subs (expires_at)"
+        )
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_free_grants_expires_at ON free_grants (expires_at)"
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS idx_free_grants_expires_at ON free_grants (expires_at)"
+        )
     )
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS idx_free_grants_expires_at")
-    op.execute("DROP INDEX IF EXISTS idx_subs_expires_at")
-    op.execute("DROP INDEX IF EXISTS uq_un_uid_kind_day")
+    op.execute(sa.text("DROP INDEX IF EXISTS idx_free_grants_expires_at"))
+    op.execute(sa.text("DROP INDEX IF EXISTS idx_subs_expires_at"))
+    op.execute(sa.text("DROP INDEX IF EXISTS uq_un_uid_kind_day"))
     op.drop_index("idx_un_uid_kind", table_name="user_notifications")
     op.drop_table("user_notifications")

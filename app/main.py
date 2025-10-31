@@ -9,6 +9,7 @@ from typing import Optional
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramAPIError
 
 from app.config import cfg
@@ -127,7 +128,10 @@ async def _main() -> None:
     await init_checks()
     await init_free()
 
-    bot = Bot(token=cfg.bot_token, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        token=cfg.bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dp = Dispatcher()
     ctx = AppContext(bot=bot, dp=dp)
     dp["ctx"] = ctx

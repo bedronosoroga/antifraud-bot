@@ -110,10 +110,12 @@ def clean_value(x: object) -> str:
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     """Возвращает копию df, где ко всем ячейкам применён clean_value.
 
+    Pandas 2.1+ помечает DataFrame.applymap как устаревший, поэтому
+    используем DataFrame.map, появившийся в новых версиях.
     Пустые значения превращаются в "".
     """
 
-    return df.applymap(clean_value)
+    return df.map(clean_value)
 
 
 def _scan_dir(dir_path: Path) -> list[Path]:

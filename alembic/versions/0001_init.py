@@ -9,7 +9,8 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql as pg
+from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import ENUM, JSONB
 
 # revision identifiers, used by Alembic.
 revision: str = "d42954ad33d6"
@@ -18,16 +19,61 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def pg_enum(name: str, *labels: str) -> ENUM:
+    enum = ENUM(*labels, name=name, create_type=False, native_enum=True)
+    enum._create_events = False
+    return enum
+
+
 def upgrade() -> None:
-    bind = op.get_bind()
-
-    plan_enum = sa.Enum("none", "p20", "p50", "unlim", name="plan_enum")
-    risk_enum = sa.Enum("none", "elevated", "critical", "scarce", "unknown", name="risk_enum")
-    report_enum = sa.Enum("A", "B", "C", "D", "E", name="report_enum")
-    payment_status_enum = sa.Enum("waiting", "confirmed", "rejected", name="payment_status_enum")
-
-    for enum in (plan_enum, risk_enum, report_enum, payment_status_enum):
-        enum.create(bind=bind, checkfirst=True)
+    op.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'plan_enum') THEN
+                CREATE TYPE plan_enum AS ENUM ('none','p20','p50','unlim');
+              END IF;
+            END$$;
+            """
+        )
+    )
+    op.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'payment_status_enum') THEN
+                CREATE TYPE payment_status_enum AS ENUM ('waiting','confirmed','rejected');
+              END IF;
+            END$$;
+            """
+        )
+    )
+    op.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'report_enum') THEN
+                CREATE TYPE report_enum AS ENUM ('A','B','C','D','E');
+              END IF;
+            END$$;
+            """
+        )
+    )
+    op.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'risk_enum') THEN
+                CREATE TYPE risk_enum AS ENUM ('none','elevated','critical','scarce','unknown');
+              END IF;
+            END$$;
+            """
+        )
+    )
 
     op.create_table(
         "users",
@@ -43,7 +89,7 @@ def upgrade() -> None:
     op.create_table(
         "subs",
         sa.Column("uid", sa.BigInteger(), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
-        sa.Column("plan", sa.Enum("none", "p20", "p50", "unlim", name="plan_enum", create_type=False), nullable=False, server_default=sa.text("'none'::plan_enum")),
+        sa.Column("plan", pg_enum("plan_enum", "none", "p20", "p50", "unlim"), nullable=False, server_default=sa.text("'none'::plan_enum")),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("checks_left", sa.Integer(), nullable=True),
@@ -60,8 +106,8 @@ def upgrade() -> None:
         sa.Column("ts", sa.DateTime(timezone=True), nullable=False),
         sa.Column("lin", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("exp", sa.Integer(), nullable=False, server_default=sa.text("0")),
-        sa.Column("risk", sa.Enum("none", "elevated", "critical", "scarce", "unknown", name="risk_enum", create_type=False), nullable=False),
-        sa.Column("report_type", sa.Enum("A", "B", "C", "D", "E", name="report_enum", create_type=False), nullable=False),
+        sa.Column("risk", pg_enum("risk_enum", "none", "elevated", "critical", "scarce", "unknown"), nullable=False),
+        sa.Column("report_type", pg_enum("report_enum", "A", "B", "C", "D", "E"), nullable=False),
         sa.CheckConstraint("ati ~ '^[0-9]{1,7}$'", name="ck_history_ati_format"),
     )
     op.execute("CREATE INDEX ix_history_uid_ts_desc ON history (uid, ts DESC)")
@@ -91,19 +137,19 @@ def upgrade() -> None:
         sa.Column("uid", sa.BigInteger(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
         sa.Column("amount_kop", sa.BigInteger(), nullable=False),
         sa.Column("ts", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("status", sa.Enum("waiting", "confirmed", "rejected", name="payment_status_enum", create_type=False), nullable=False),
+        sa.Column("status", pg_enum("payment_status_enum", "waiting", "confirmed", "rejected"), nullable=False),
     )
 
     op.create_table(
         "pending_payments",
         sa.Column("id", sa.Text(), primary_key=True),
         sa.Column("uid", sa.BigInteger(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("plan", sa.Enum("none", "p20", "p50", "unlim", name="plan_enum", create_type=False), nullable=False),
+        sa.Column("plan", pg_enum("plan_enum", "none", "p20", "p50", "unlim"), nullable=False),
         sa.Column("amount_kop", sa.Integer(), nullable=False),
         sa.Column("provider_invoice_id", sa.Text(), nullable=True),
-        sa.Column("status", sa.Enum("waiting", "confirmed", "rejected", name="payment_status_enum", create_type=False), nullable=False, server_default=sa.text("'waiting'::payment_status_enum")),
+        sa.Column("status", pg_enum("payment_status_enum", "waiting", "confirmed", "rejected"), nullable=False, server_default=sa.text("'waiting'::payment_status_enum")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("metadata", pg.JSONB(), nullable=True),
+        sa.Column("metadata", JSONB(), nullable=True),
     )
     op.create_index("ix_pending_payments_uid_status", "pending_payments", ["uid", "status"])
 
@@ -118,8 +164,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-
     op.drop_table("free_grants")
     op.drop_index("ix_pending_payments_uid_status", table_name="pending_payments")
     op.drop_table("pending_payments")
@@ -132,13 +176,51 @@ def downgrade() -> None:
     op.drop_table("subs")
     op.drop_table("users")
 
-    for enum in (
-        sa.Enum(name="payment_status_enum"),
-        sa.Enum(name="report_enum"),
-        sa.Enum(name="risk_enum"),
-        sa.Enum(name="plan_enum"),
-    ):
-        try:
-            enum.drop(bind=bind, checkfirst=True)
-        except Exception:
-            pass
+    op.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+              IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'report_enum') THEN
+                DROP TYPE report_enum;
+              END IF;
+            END$$;
+            """
+        )
+    )
+    op.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+              IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'risk_enum') THEN
+                DROP TYPE risk_enum;
+              END IF;
+            END$$;
+            """
+        )
+    )
+    op.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+              IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'payment_status_enum') THEN
+                DROP TYPE payment_status_enum;
+              END IF;
+            END$$;
+            """
+        )
+    )
+    op.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+              IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'plan_enum') THEN
+                DROP TYPE plan_enum;
+              END IF;
+            END$$;
+            """
+        )
+    )
