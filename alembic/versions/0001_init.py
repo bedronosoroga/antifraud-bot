@@ -19,10 +19,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("CREATE TYPE plan_enum AS ENUM ('none','p20','p50','unlim')")
-    op.execute("CREATE TYPE risk_enum AS ENUM ('none','elevated','critical','scarce','unknown')")
-    op.execute("CREATE TYPE report_enum AS ENUM ('A','B','C','D','E')")
-    op.execute("CREATE TYPE payment_status_enum AS ENUM ('waiting','confirmed','rejected')")
+    bind = op.get_bind()
+
+    plan_enum = sa.Enum("none", "p20", "p50", "unlim", name="plan_enum")
+    risk_enum = sa.Enum("none", "elevated", "critical", "scarce", "unknown", name="risk_enum")
+    report_enum = sa.Enum("A", "B", "C", "D", "E", name="report_enum")
+    payment_status_enum = sa.Enum("waiting", "confirmed", "rejected", name="payment_status_enum")
+
+    for enum in (plan_enum, risk_enum, report_enum, payment_status_enum):
+        enum.create(bind=bind, checkfirst=True)
 
     op.create_table(
         "users",
@@ -113,6 +118,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+
     op.drop_table("free_grants")
     op.drop_index("ix_pending_payments_uid_status", table_name="pending_payments")
     op.drop_table("pending_payments")
@@ -125,7 +132,13 @@ def downgrade() -> None:
     op.drop_table("subs")
     op.drop_table("users")
 
-    op.execute("DROP TYPE payment_status_enum")
-    op.execute("DROP TYPE report_enum")
-    op.execute("DROP TYPE risk_enum")
-    op.execute("DROP TYPE plan_enum")
+    for enum in (
+        sa.Enum(name="payment_status_enum"),
+        sa.Enum(name="report_enum"),
+        sa.Enum(name="risk_enum"),
+        sa.Enum(name="plan_enum"),
+    ):
+        try:
+            enum.drop(bind=bind, checkfirst=True)
+        except Exception:
+            pass
