@@ -25,6 +25,7 @@ from app.texts import (
     help_main, faq_text, support_pretext,
     DEMO_PAYMENT_HEADER, DEMO_PAYMENT_NOTE, DEMO_PAYMENT_CREATED,
     DEMO_PAYMENT_CONFIRMED, DEMO_PAYMENT_REJECTED,
+    PAYMENT_TERMS_NOTE,
     fmt_rub,
 )
 from app.keyboards import (
@@ -215,7 +216,8 @@ async def on_plan_buy(query: CallbackQuery) -> None:
 
     await query.answer()
     await query.message.edit_text(
-        "Готовим счёт… Сейчас откроется окно оплаты. Если не открылось — воспользуйтесь кнопками ниже.",
+        "Готовим счёт… Сейчас откроется окно оплаты. Если не открылось — воспользуйтесь кнопками ниже."
+        "\n\n" + PAYMENT_TERMS_NOTE,
         reply_markup=kb_payment_retry()
     )
 
@@ -242,6 +244,7 @@ async def on_sandbox_init(query: CallbackQuery) -> None:
     payment = await sandbox_pay.start_demo_checkout(query.from_user.id, plan)
     note_parts = [
         DEMO_PAYMENT_HEADER,
+        PAYMENT_TERMS_NOTE,
         DEMO_PAYMENT_NOTE,
         DEMO_PAYMENT_CREATED,
     ]

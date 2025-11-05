@@ -109,6 +109,13 @@ DEMO_PAYMENT_NOTE = PAYMENTS_SANDBOX_NOTE
 DEMO_PAYMENT_CREATED = "Заказ создан. Для теста подтвердите или отмените оплату."
 DEMO_PAYMENT_CONFIRMED = "✅ Оплата подтверждена (демо). Доступ активирован."
 DEMO_PAYMENT_REJECTED = "❌ Оплата отклонена (демо). Попробуйте снова."
+PAYMENT_TERMS_NOTE = (
+    "Оплачивая, вы принимаете <a href=\"https://telegra.ph/POLZOVATELSKOE-SOGLAShENIE-USLOVIYa-SERVISA-11-05\">Условия сервиса</a> "
+    "и <a href=\"https://telegra.ph/Publichnaya-oferta-na-okazanie-uslug-11-05\">Оферту</a>. "
+    "<a href=\"https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-11-05-47\">Политика конфиденциальности</a>. "
+    "<a href=\"https://telegra.ph/PRAVOVOE-UVEDOMLENIE-O-HARAKTERE-SVEDENIJ-I-PORYADKE-OSPARIVANIYa-11-05\">Правовое уведомление</a>. "
+    "<a href=\"https://telegra.ph/Kontakty-i-rekvizity-11-05\">Контакты и реквизиты</a>."
+)
 SUB_EXPIRY_D3 = "Через 3 дня закончится доступ. Продлите, чтобы не потерять проверки."
 SUB_EXPIRY_D1 = "Остался 1 день до окончания доступа. Продлите, чтобы продолжать проверки."
 SUB_EXPIRED = "Доступ закончился. Оплатите план, чтобы снова проверять коды."
@@ -668,7 +675,7 @@ __all__ = [
     "BTN_REPEAT_PAYMENT", "BTN_CHOOSE_ANOTHER_PLAN",
     "BTN_PAY_SUPPORT", "BTN_SUPPORT", "BTN_FAQ",
     "DEMO_PAYMENT_HEADER", "DEMO_PAYMENT_NOTE", "DEMO_PAYMENT_CREATED",
-    "DEMO_PAYMENT_CONFIRMED", "DEMO_PAYMENT_REJECTED",
+    "DEMO_PAYMENT_CONFIRMED", "DEMO_PAYMENT_REJECTED", "PAYMENT_TERMS_NOTE",
     "BTN_MY_REF_LINK", "BTN_HOW_IT_WORKS",
     "BTN_REF_COPY", "BTN_REF_SHARE",
     "BTN_REF_SPEND_20", "BTN_REF_SPEND_50", "BTN_REF_SPEND_UNLIM", "BTN_REF_WITHDRAW",
