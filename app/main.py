@@ -20,7 +20,8 @@ from app.core.scheduler import create as create_scheduler
 from app.domain.checks.loader import load_catalog
 from app.domain.checks.service import CheckerService
 
-from app.domain.onboarding.free import FREE
+from app.domain.onboarding.free import FREE, FreeService
+from app.domain.subs import service as subs_service
 
 from app.bot.handlers_public import router as public_router, init_onboarding_runtime
 from app.bot.handlers_numeric import (
@@ -69,8 +70,9 @@ async def init_checks() -> None:
 
 async def init_free() -> None:
     try:
-        init_onboarding_runtime(free=None)
-        init_quota_runtime(free=None, subs=None)
+        free_service = FreeService(total=FREE["total"], ttl_hours=FREE["ttl_hours"])
+        init_onboarding_runtime(free=free_service)
+        init_quota_runtime(free=free_service, subs=subs_service)
         logging.info(
             "Free runtime ready: %s checks / %s hours",
             FREE["total"],

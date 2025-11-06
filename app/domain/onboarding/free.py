@@ -159,6 +159,42 @@ async def consume(uid: int, *, now_ts: Optional[float] = None) -> None:
         raise ValueError("free quota unavailable") from exc
 
 
+_CAN_CONSUME_FN = can_consume
+_CONSUME_FN = consume
+_GET_STATUS_FN = get_status
+
+
+class FreeService:
+    """Adapter providing a higher-level API over free grant helpers."""
+
+    def __init__(self, *, total: int, ttl_hours: int) -> None:
+        self.total = total
+        self.ttl_hours = ttl_hours
+
+    async def ensure_pack(self, uid: int, now: datetime) -> None:
+        record = await dal.get_free_grant(uid)
+        if record is not None:
+            return
+        ts = now.timestamp()
+        expires_at_ts = ts + self.ttl_hours * SECONDS_IN_HOUR
+        await dal.ensure_free_grant(
+            uid,
+            granted_at_ts=ts,
+            expires_at_ts=expires_at_ts,
+            total=self.total,
+        )
+
+    async def can_consume(self, uid: int, now: datetime) -> tuple[bool, Optional[str]]:
+        result = await _CAN_CONSUME_FN(uid, now_ts=now.timestamp())
+        return result.get("ok", False), result.get("reason")
+
+    async def consume_one(self, uid: int, now: datetime) -> None:
+        await _CONSUME_FN(uid, now_ts=now.timestamp())
+
+    async def status(self, uid: int, now: datetime) -> FreeStatus:
+        return await _GET_STATUS_FN(uid, now_ts=now.timestamp())
+
+
 __all__ = [
     "FreeStatus",
     "CanFreeResult",
@@ -167,4 +203,5 @@ __all__ = [
     "get_status",
     "can_consume",
     "consume",
+    "FreeService",
 ]

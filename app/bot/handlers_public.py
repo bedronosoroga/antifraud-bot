@@ -13,6 +13,7 @@ from aiogram.types import Message, CallbackQuery
 from app.config import PAYMENTS_ACTIVE_PROVIDER, cfg
 from app.core import db as dal
 from app.domain.payments import sandbox as sandbox_pay
+from app.domain.onboarding.free import FreeService
 from app.domain.subs import service as subs_service
 from app.texts import (
     hint_send_code, err_need_digits_upto_7,
@@ -43,13 +44,13 @@ HISTORY_PAGE_SIZE = 10
 
 
 class _OnboardingRuntime:
-    free: object | None = None
+    free: FreeService | None = None
 
 
 _onb = _OnboardingRuntime()
 
 
-def init_onboarding_runtime(*, free: object | None) -> None:
+def init_onboarding_runtime(*, free: FreeService | None) -> None:
     """
     Вызывается из main при сборке зависимостей, чтобы /start мог выдать пакет.
     """
@@ -172,9 +173,8 @@ async def on_start(message: Message, state: FSMContext) -> None:
             logging.exception("ensure_user failed for /start")
 
     try:
-        if _onb.free is not None:
-            if from_user is not None:
-                _onb.free.ensure_pack(from_user.id, datetime.now())
+        if _onb.free is not None and from_user is not None:
+            await _onb.free.ensure_pack(from_user.id, datetime.now())
     except Exception:
         logging.exception("ensure_pack failed")
 

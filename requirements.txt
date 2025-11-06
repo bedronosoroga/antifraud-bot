@@ -1,4 +1,4 @@
-aiogram>=3.5,<4
+aiogram>=3.7,<4
 aiohttp>=3.9,<4
 python-dotenv>=1.0
 pandas>=2.2.3

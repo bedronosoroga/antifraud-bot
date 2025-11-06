@@ -4,61 +4,69 @@ from datetime import datetime
 from typing import Literal, NamedTuple
 
 from aiogram import Router, F
+from aiogram.filters import StateFilter
 from aiogram.types import Message
 
 from app import texts
 from app.keyboards import kb_after_report, kb_main
 from app.domain.checks.service import CheckerService
-from app.domain.checks.formatter import build_report_text
+from app.domain.checks.formatter import build_report_text, choose_report_type
 from app.domain.onboarding import free as free_dal
 from app.domain.subs import service as subs_service
 from app.config import cfg
+from app.core import db as dal
 
 
 router = Router(name="numeric")
 
 
 class _QuotaRuntime:
-    free: object | None = None
+    free: free_dal.FreeService | None = None
+    subs = subs_service
 
 
 _quota = _QuotaRuntime()
 
 
-def init_quota_runtime(*, free: object | None, subs: object | None) -> None:
+def init_quota_runtime(*, free: free_dal.FreeService | None, subs: object | None) -> None:
     """Вызывается из main при сборке DI-контейнера."""
 
     _quota.free = free
-    _quota.subs = subs
+    if subs is not None:
+        _quota.subs = subs
 
 
 class ConsumeResult(NamedTuple):
     allowed: bool
     source: Literal["admin", "free", "sub", "none"]
     reason: str | None
-    subs_status: SubsStatus | None
+    subs_status: subs_service.SubInfo | None
 
 
-def _resolve_and_consume(user_id: int, now: datetime) -> ConsumeResult:
+async def _resolve_and_consume(user_id: int, now: datetime) -> ConsumeResult:
     # Админы проходят всегда, ничего не списываем
     if user_id in cfg.admin_ids:
         return ConsumeResult(True, "admin", None, None)
 
     # 1) Бесплатные 5 на 3 дня
     if _quota.free is not None:
-        ok, _reason = _quota.free.can_consume(user_id, now)
+        await _quota.free.ensure_pack(user_id, now)
+        ok, _reason = await _quota.free.can_consume(user_id, now)
         if ok:
-            _quota.free.consume_one(user_id, now)
+            await _quota.free.consume_one(user_id, now)
             return ConsumeResult(True, "free", None, None)
 
     # 2) Подписка
     if _quota.subs is not None:
-        ok, reason = _quota.subs.can_consume(user_id, now)
+        ok_result = await _quota.subs.can_consume(uid=user_id, now_ts=now.timestamp())
+        ok = ok_result.get("ok", False)
+        reason = ok_result.get("reason")
         if ok:
-            status_after = _quota.subs.consume_one(user_id, now)
+            await _quota.subs.consume(user_id, now_ts=now.timestamp())
+            status_after = await _quota.subs.get_status(user_id, now_ts=now.timestamp())
             return ConsumeResult(True, "sub", None, status_after)
-        status = _quota.subs.get_status(user_id, now)
-        return ConsumeResult(False, "none", status.reason, status)
+        status = await _quota.subs.get_status(user_id, now_ts=now.timestamp())
+        return ConsumeResult(False, "none", reason, status)
 
     # 3) Сервисов нет — запрещаем (без «заглушек», чтобы не было «бесплатного пролива»)
     return ConsumeResult(False, "none", "нет активной подписки", None)
@@ -92,7 +100,7 @@ async def _not_ready_reply(message: Message) -> None:
     )
 
 
-@router.message(F.text.regexp(r"^\d{1,7}$"))
+@router.message(StateFilter(None), F.text.regexp(r"^\d{1,7}$"))
 async def on_ati_code(message: Message) -> None:
     """
     Ловим любой текст из 1–7 цифр: это код АТИ.
@@ -116,7 +124,7 @@ async def on_ati_code(message: Message) -> None:
         return
 
     now = datetime.now()
-    cons = _resolve_and_consume(user_id=from_user.id, now=now)
+    cons = await _resolve_and_consume(user_id=from_user.id, now=now)
     if not cons.allowed:
         await message.answer(texts.paywall_no_checks(), reply_markup=kb_main())
         return
@@ -125,6 +133,16 @@ async def on_ati_code(message: Message) -> None:
         raw = (message.text or "").strip()
         code = _runtime.checker.normalize_code(raw)
         res = _runtime.checker.check(code)
+        report_type = choose_report_type(res, _runtime.lin_ok, _runtime.exp_ok)
+        await dal.append_history(
+            from_user.id,
+            ati=res.ati,
+            ts=now.timestamp(),
+            lin=res.lin_index,
+            exp=res.exp_index,
+            risk=res.risk,
+            report_type=report_type,
+        )
         report = build_report_text(code, res, _runtime.lin_ok, _runtime.exp_ok)
         await message.answer(report, reply_markup=kb_after_report())
     except Exception:
