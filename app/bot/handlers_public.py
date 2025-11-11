@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Filter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -71,6 +71,17 @@ def _get_quota_service():
 
 def init_onboarding_runtime(*, free: FreeService | None) -> None:
     _onboarding.free = free
+
+
+class _InputModeActive(Filter):
+    def __init__(self, active: bool = True) -> None:
+        self.active = active
+
+    async def __call__(self, message: Message, state: FSMContext) -> bool:  # type: ignore[override]
+        data = await state.get_data()
+        mode = data.get(INPUT_MODE_KEY, INPUT_NONE)
+        is_active = mode not in (None, INPUT_NONE)
+        return is_active if self.active else not is_active
 
 
 async def _answer(target: Message | CallbackQuery, text: str, keyboard: InlineKeyboardMarkup) -> None:
@@ -342,10 +353,9 @@ async def _handle_start_referral(uid: int, payload: str) -> None:
     arg = parts[1] if len(parts) > 1 else ""
     if not arg:
         return
-    if arg.startswith("ref_"):
-        code = arg[4:]
-    else:
-        code = arg
+    code = arg
+    if code.lower().startswith("ref_"):
+        code = code[4:]
     try:
         attached = await referral_service.attach_referrer_by_code(uid, code)
         if attached:
@@ -361,9 +371,31 @@ async def _ensure_free_pack(uid: int) -> None:
         return
     now = datetime.now(timezone.utc)
     try:
+        existing = await dal.get_free_grant(uid)
+    except Exception:
+        existing = None
+    try:
         await _onboarding.free.ensure_pack(uid, now)
     except Exception:
         logging.exception("failed to ensure free grant for user %s", uid)
+        return
+    if existing is None:
+        await _grant_signup_bonus(uid)
+
+
+async def _grant_signup_bonus(uid: int) -> None:
+    quota_service = _get_quota_service()
+    try:
+        account = await dal.get_quota_account(uid)
+    except Exception:
+        logging.exception("failed to read quota account for user %s", uid)
+        return
+    if account is not None:
+        return
+    try:
+        await quota_service.add(uid, 3, source="signup")
+    except Exception:
+        logging.exception("failed to grant signup bonus for user %s", uid)
 
 
 @router.callback_query(F.data == "menu:open")
@@ -616,7 +648,7 @@ async def show_referral(
     info = dashboard["info"]
     slug = info.get("custom_tag") or info.get("code")
     bot_username = await _get_bot_username(target, state)
-    link = f"https://t.me/{bot_username}?start=ref_{slug}"
+    link = f"https://t.me/{bot_username}?start={slug}"
     await state.update_data({"ref_link": link})
     text = texts.ref_program_text(
         link=link,
@@ -637,11 +669,9 @@ async def show_referral(
     await _answer(target, text, kb_referral_main())
 
 
-@router.message(F.text)
+@router.message(_InputModeActive())
 async def on_text_input(message: Message, state: FSMContext) -> None:
     mode = await _get_input_mode(state)
-    if mode == INPUT_NONE:
-        return
     if mode == INPUT_PROFILE_ATI:
         await _handle_profile_code_input(message, state)
         return
@@ -688,7 +718,7 @@ async def _handle_ref_tag_input(message: Message, state: FSMContext) -> None:
         return
     await _set_input_mode(state, INPUT_NONE)
     bot_username = await _get_bot_username(message, state)
-    link = f"https://t.me/{bot_username}?start=ref_{new_tag}"
+    link = f"https://t.me/{bot_username}?start={new_tag}"
     await state.update_data({"ref_link": link})
     await message.answer(f"Готово. Ваша ссылка: {link}")
     await show_referral(message, state, replace=True)

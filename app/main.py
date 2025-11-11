@@ -95,7 +95,10 @@ def init_quota_service() -> QuotaService:
 
 def setup_error_handlers(dp: Dispatcher) -> None:
     @dp.errors()
-    async def error_handler(event, exception):
+    async def error_handler(event, data):
+        exception = data.get("exception")
+        if exception is None:
+            return False
         if isinstance(exception, RateLimitExceeded):
             try:
                 update = event.update

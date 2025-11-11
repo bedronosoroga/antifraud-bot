@@ -1008,11 +1008,11 @@ async def change_quota_balance(
             .on_conflict_do_nothing(index_elements=[quota_balances.c.uid])
         )
 
-        update_values: dict[Any, Any] = {quota_balances.c.updated_at: now}
+        update_values: dict[str, Any] = {"updated_at": now}
         if delta != 0:
-            update_values[quota_balances.c.balance] = quota_balances.c.balance + delta
+            update_values["balance"] = quota_balances.c.balance + delta
         if set_last_daily is not None:
-            update_values[quota_balances.c.last_daily_grant] = set_last_daily
+            update_values["last_daily_grant"] = set_last_daily
 
         stmt = (
             update(quota_balances)
