@@ -22,16 +22,19 @@ from app.domain.checks.service import CheckerService
 
 from app.domain.onboarding.free import FREE, FreeService
 from app.domain.subs import service as subs_service
+from app.domain.quotas.service import QuotaService
+from app.domain.payments.provider import init_payment_runtime
 
 from app.bot.handlers_public import router as public_router, init_onboarding_runtime
 from app.bot.handlers_numeric import (
     router as numeric_router,
     init_checks_runtime,
-    init_quota_runtime,
 )
+from app.bot import runtime as bot_runtime
 
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+_quota_service: QuotaService | None = None
 
 
 @dataclass
@@ -72,7 +75,6 @@ async def init_free() -> None:
     try:
         free_service = FreeService(total=FREE["total"], ttl_hours=FREE["ttl_hours"])
         init_onboarding_runtime(free=free_service)
-        init_quota_runtime(free=free_service, subs=subs_service)
         logging.info(
             "Free runtime ready: %s checks / %s hours",
             FREE["total"],
@@ -80,6 +82,15 @@ async def init_free() -> None:
         )
     except Exception:
         logging.exception("Failed to initialize free runtime")
+
+
+def init_quota_service() -> QuotaService:
+    global _quota_service
+    if _quota_service is None:
+        _quota_service = QuotaService(tz=cfg.tz)
+        bot_runtime.set_quota_service(_quota_service)
+        init_payment_runtime(quota=_quota_service)
+    return _quota_service
 
 
 def setup_error_handlers(dp: Dispatcher) -> None:
@@ -129,6 +140,7 @@ async def _main() -> None:
     await init_database()
     await init_checks()
     await init_free()
+    init_quota_service()
 
     bot = Bot(
         token=cfg.bot_token,

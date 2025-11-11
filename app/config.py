@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 __all__ = [
     "AppPaths",
     "SubscriptionPlan",
+    "RequestPackage",
     "Cfg",
     "PostgresCfg",
     "PG",
@@ -18,6 +19,10 @@ __all__ = [
     "FREE",
     "REF_TIERS",
     "REF_WITHDRAW_MIN_KOP",
+    "REF_WITHDRAW_MIN_USD",
+    "REF_WITHDRAW_FEE_PERCENT",
+    "REF_SECOND_LINE_PERCENT",
+    "REQUEST_PACKAGES",
     "PAYMENTS_ACTIVE_PROVIDER",
     "PAYMENTS_SANDBOX_NOTE",
     "ADMINS",
@@ -125,6 +130,20 @@ class SubscriptionPlan:
     checks_in_pack: int | None
     is_unlimited: bool
     daily_cap: int | None
+
+
+@dataclass(frozen=True)
+class RequestPackage:
+    """Per-request package offered for purchase."""
+
+    qty: int
+    price_rub: int
+    unit_price_rub: float
+    discount_hint: str
+
+    @property
+    def price_kop(self) -> int:
+        return self.price_rub * 100
 
 
 @dataclass(frozen=True)
@@ -279,14 +298,25 @@ FREE: dict[str, int] = {
 }
 
 REF_TIERS: list[dict[str, int]] = [
-    {"min_paid": 0, "percent": 10},
-    {"min_paid": 3, "percent": 20},
-    {"min_paid": 10, "percent": 30},
-    {"min_paid": 25, "percent": 40},
-    {"min_paid": 50, "percent": 50},
+    {"min_paid": 0, "percent": 15},   # 0-4 paying referrals
+    {"min_paid": 5, "percent": 25},   # 5-14
+    {"min_paid": 15, "percent": 35},  # 15-49
+    {"min_paid": 50, "percent": 45},  # 50+
 ]
 
-REF_WITHDRAW_MIN_KOP: int = 500_00
+REF_SECOND_LINE_PERCENT: int = 5
+REF_WITHDRAW_MIN_KOP: int = 1_000_00
+REF_WITHDRAW_MIN_USD: int = 10
+REF_WITHDRAW_FEE_PERCENT: int = 8
+
+REQUEST_PACKAGES: list[RequestPackage] = [
+    RequestPackage(qty=5, price_rub=99, unit_price_rub=19.8, discount_hint="~20 ₽/шт"),
+    RequestPackage(qty=15, price_rub=239, unit_price_rub=15.93, discount_hint="~16 ₽/шт, −20%"),
+    RequestPackage(qty=35, price_rub=489, unit_price_rub=13.97, discount_hint="~14 ₽/шт, −30%"),
+    RequestPackage(qty=75, price_rub=899, unit_price_rub=11.99, discount_hint="~12 ₽/шт, −40%"),
+    RequestPackage(qty=150, price_rub=1490, unit_price_rub=9.93, discount_hint="~10 ₽/шт, −50%"),
+    RequestPackage(qty=500, price_rub=2990, unit_price_rub=5.98, discount_hint="~6 ₽/шт, −70%"),
+]
 
 PAYMENTS_ACTIVE_PROVIDER: str = env_str("PAYMENTS_ACTIVE_PROVIDER", "sandbox") or "sandbox"
 PAYMENTS_SANDBOX_NOTE: str = (

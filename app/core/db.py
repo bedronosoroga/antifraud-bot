@@ -21,27 +21,41 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    String,
     Table,
     Text,
-    String,
+    UniqueConstraint,
+    delete,
+    func,
     insert,
     literal,
-    delete,
     select,
     text,
     update,
-    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import aliased
 
 from app.config import DEV_CREATE_ALL, PG, RUN_MIGRATIONS
 
 
 metadata = MetaData()
 
-plan_enum = Enum("none", "p20", "p50", "unlim", name="plan_enum", create_type=False, metadata=metadata)
+PLAN_ENUM_VALUES = [
+    "none",
+    "p20",
+    "p50",
+    "unlim",
+    "pkg5",
+    "pkg15",
+    "pkg35",
+    "pkg75",
+    "pkg150",
+    "pkg500",
+]
+plan_enum = Enum(*PLAN_ENUM_VALUES, name="plan_enum", create_type=False, metadata=metadata)
 risk_enum = Enum("none", "elevated", "critical", "scarce", "unknown", name="risk_enum", create_type=False, metadata=metadata)
 report_enum = Enum("A", "B", "C", "D", "E", name="report_enum", create_type=False, metadata=metadata)
 payment_status_enum = Enum("waiting", "confirmed", "rejected", name="payment_status_enum", create_type=False, metadata=metadata)
@@ -105,8 +119,17 @@ referrals = Table(
     Column("tier", Integer, nullable=False, server_default=text("0")),
     Column("percent", Integer, nullable=False, server_default=text("10")),
     Column("balance_kop", BigInteger, nullable=False, server_default=text("0")),
+    Column("total_earned_kop", BigInteger, nullable=False, server_default=text("0")),
+    Column("paid_refs_count", Integer, nullable=False, server_default=text("0")),
+    Column("first_paid_at", DateTime(timezone=True), nullable=True),
+    Column("inviter_bonus_granted", Boolean, nullable=False, server_default=text("false")),
+    Column("custom_tag", Text, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+    UniqueConstraint("custom_tag", name="uq_referrals_custom_tag"),
 )
+
+Index("idx_referrals_referred_by", referrals.c.referred_by)
 
 ref_payouts = Table(
     "ref_payouts",
@@ -116,6 +139,7 @@ ref_payouts = Table(
     Column("amount_kop", BigInteger, nullable=False),
     Column("ts", DateTime(timezone=True), nullable=False, server_default=text("now()")),
     Column("status", payment_status_enum, nullable=False),
+    Column("details", JSONB, nullable=True),
 )
 
 pending_payments = Table(
@@ -165,6 +189,30 @@ user_notifications = Table(
 
 Index("idx_un_uid_kind", user_notifications.c.uid, user_notifications.c.kind)
 
+quota_balances = Table(
+    "quota_balances",
+    metadata,
+    Column("uid", BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("balance", Integer, nullable=False, server_default=text("0")),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+    Column("last_daily_grant", Date, nullable=True),
+)
+
+quota_events = Table(
+    "quota_events",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("uid", BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("delta", Integer, nullable=False),
+    Column("source", Text, nullable=False),
+    Column("event_key", Text, nullable=True),
+    Column("metadata", JSONB, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+    UniqueConstraint("uid", "event_key", name="uq_quota_events_uid_key"),
+)
+
+Index("idx_quota_events_uid", quota_events.c.uid)
+
 engine = create_async_engine(
     PG.url,
     pool_pre_ping=True,
@@ -176,7 +224,7 @@ Session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-PLAN_VALUES = frozenset(["none", "p20", "p50", "unlim"])
+PLAN_VALUES = frozenset(PLAN_ENUM_VALUES)
 PAID_PLAN_VALUES = frozenset(["p20", "p50", "unlim"])
 RISK_VALUES = frozenset(["none", "elevated", "critical", "scarce", "unknown"])
 REPORT_VALUES = frozenset(["A", "B", "C", "D", "E"])
@@ -334,7 +382,7 @@ async def append_history(
     uid: int,
     *,
     ati: str,
-    ts: float,
+    ts: datetime | float,
     lin: int,
     exp: int,
     risk: str,
@@ -347,7 +395,10 @@ async def append_history(
     if report_type not in REPORT_VALUES:
         raise ValueError(f"unknown report_type '{report_type}'")
 
-    ts_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    if isinstance(ts, datetime):
+        ts_dt = _ensure_datetime_utc(ts)
+    else:
+        ts_dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
 
     async with Session() as session, session.begin():
         await session.execute(
@@ -364,7 +415,7 @@ async def append_history(
 
 
 def _history_events_subquery(uid: int):
-    check_stmt = (
+    return (
         select(
             literal("check").label("type"),
             history.c.ts.label("ts"),
@@ -377,25 +428,8 @@ def _history_events_subquery(uid: int):
             literal(None).label("amount_kop"),
         )
         .where(history.c.uid == uid)
+        .subquery()
     )
-
-    payment_stmt = (
-        select(
-            literal("payment").label("type"),
-            pending_payments.c.created_at.label("ts"),
-            pending_payments.c.uid.label("uid"),
-            literal(None).label("ati"),
-            literal(None).label("report_type"),
-            literal(None).label("lin"),
-            literal(None).label("exp"),
-            pending_payments.c.plan.label("plan"),
-            pending_payments.c.amount_kop.label("amount_kop"),
-        )
-        .where(pending_payments.c.uid == uid)
-        .where(pending_payments.c.status == "confirmed")
-    )
-
-    return check_stmt.union_all(payment_stmt).subquery()
 
 
 async def get_history(uid: int, *, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
@@ -734,13 +768,17 @@ async def update_ref_stats(
     *,
     paid_increment: int = 0,
     balance_delta_kop: int = 0,
+    total_earned_delta_kop: int = 0,
+    paid_refs_increment: int = 0,
 ) -> dict[str, Any]:
     stmt = (
         update(referrals)
         .where(referrals.c.uid == uid)
         .values(
             paid_count=referrals.c.paid_count + paid_increment,
+            paid_refs_count=referrals.c.paid_refs_count + paid_refs_increment,
             balance_kop=referrals.c.balance_kop + balance_delta_kop,
+            total_earned_kop=referrals.c.total_earned_kop + total_earned_delta_kop,
             updated_at=now_utc(),
         )
         .returning(referrals)
@@ -751,14 +789,16 @@ async def update_ref_stats(
         row = result.mappings().first()
         if row is None:
             raise ValueError("referral record not found")
+        if int(row["balance_kop"]) < 0:
+            raise ValueError("referral balance cannot be negative")
         return dict(row)
 
 
 async def set_ref_tier(uid: int, *, tier: int, percent: int) -> None:
-    if tier not in {0, 1, 2, 3, 4}:
-        raise ValueError("tier must be between 0 and 4")
-    if percent not in {10, 20, 30, 40, 50}:
-        raise ValueError("percent must be one of 10,20,30,40,50")
+    if tier < 0:
+        raise ValueError("tier must be non-negative")
+    if percent < 0 or percent > 100:
+        raise ValueError("percent must be between 0 and 100")
 
     stmt = (
         update(referrals)
@@ -771,6 +811,124 @@ async def set_ref_tier(uid: int, *, tier: int, percent: int) -> None:
         result = await session.execute(stmt)
         if result.scalar_one_or_none() is None:
             raise ValueError("referral record not found")
+
+
+async def get_ref_by_custom_tag(tag: str) -> Optional[dict[str, Any]]:
+    normalized = tag.strip().lower()
+    if not normalized:
+        return None
+    async with Session() as session:
+        result = await session.execute(select(referrals).where(referrals.c.custom_tag == normalized))
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+
+async def set_ref_custom_tag(uid: int, tag: str) -> dict[str, Any]:
+    normalized = tag.strip().lower()
+    if not normalized:
+        raise ValueError("tag must be non-empty")
+
+    stmt = (
+        update(referrals)
+        .where(referrals.c.uid == uid)
+        .values(custom_tag=normalized, updated_at=now_utc())
+        .returning(referrals)
+    )
+
+    async with Session() as session, session.begin():
+        try:
+            result = await session.execute(stmt)
+        except IntegrityError as exc:
+            raise ValueError("tag already in use") from exc
+        row = result.mappings().first()
+        if row is None:
+            raise ValueError("referral record not found")
+        return dict(row)
+
+
+async def mark_invite_bonus_granted(uid: int) -> bool:
+    stmt = (
+        update(referrals)
+        .where(referrals.c.uid == uid)
+        .where(referrals.c.inviter_bonus_granted.is_(False))
+        .values(inviter_bonus_granted=True, updated_at=now_utc())
+        .returning(referrals.c.uid)
+    )
+    async with Session() as session, session.begin():
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+
+async def mark_ref_first_paid(uid: int, *, when: Optional[datetime] = None) -> Optional[int]:
+    ts = _ensure_datetime_utc(when or now_utc())
+    stmt = (
+        update(referrals)
+        .where(referrals.c.uid == uid)
+        .where(referrals.c.first_paid_at.is_(None))
+        .values(first_paid_at=ts, updated_at=now_utc())
+        .returning(referrals.c.referred_by)
+    )
+    async with Session() as session, session.begin():
+        result = await session.execute(stmt)
+        row = result.mappings().first()
+        if row is None:
+            return None
+        sponsor = row.get("referred_by")
+        return int(sponsor) if sponsor is not None else None
+
+
+async def list_direct_referrals(uid: int, *, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
+    stmt = (
+        select(
+            referrals.c.uid.label("ref_uid"),
+            referrals.c.referred_by,
+            referrals.c.first_paid_at,
+            referrals.c.created_at,
+            referrals.c.inviter_bonus_granted,
+            users.c.username,
+            users.c.first_name,
+            users.c.last_name,
+        )
+        .join(users, users.c.id == referrals.c.uid)
+        .where(referrals.c.referred_by == uid)
+        .order_by(referrals.c.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return [dict(row) for row in result.mappings().all()]
+
+
+async def count_direct_referrals(
+    uid: int,
+    *,
+    paid_only: bool = False,
+    since: Optional[datetime] = None,
+) -> int:
+    stmt = select(func.count()).select_from(referrals).where(referrals.c.referred_by == uid)
+    if paid_only:
+        stmt = stmt.where(referrals.c.first_paid_at.is_not(None))
+    if since is not None:
+        stmt = stmt.where(referrals.c.created_at >= _ensure_datetime_utc(since))
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return int(result.scalar_one())
+
+
+async def count_second_line_referrals(uid: int, *, paid_only: bool = False) -> int:
+    lvl1 = aliased(referrals)
+    lvl2 = aliased(referrals)
+    stmt = (
+        select(func.count())
+        .select_from(lvl2.join(lvl1, lvl1.c.uid == lvl2.c.referred_by))
+        .where(lvl1.c.referred_by == uid)
+    )
+    if paid_only:
+        stmt = stmt.where(lvl2.c.first_paid_at.is_not(None))
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return int(result.scalar_one())
 
 
 async def spend_ref_balance(uid: int, *, amount_kop: int) -> bool:
@@ -790,7 +948,7 @@ async def spend_ref_balance(uid: int, *, amount_kop: int) -> bool:
         return result.scalar_one_or_none() is not None
 
 
-async def add_payout(uid: int, *, amount_kop: int, status: str) -> dict[str, Any]:
+async def add_payout(uid: int, *, amount_kop: int, status: str, details: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     if status not in PAYMENT_STATUS_VALUES:
         raise ValueError(f"unknown payment status '{status}'")
     if amount_kop <= 0:
@@ -798,13 +956,118 @@ async def add_payout(uid: int, *, amount_kop: int, status: str) -> dict[str, Any
 
     stmt = (
         insert(ref_payouts)
-        .values(uid=uid, amount_kop=amount_kop, status=status)
+        .values(uid=uid, amount_kop=amount_kop, status=status, details=details)
         .returning(ref_payouts)
     )
 
     async with Session() as session, session.begin():
         result = await session.execute(stmt)
         return dict(result.mappings().one())
+
+
+async def ensure_quota_account(uid: int) -> dict[str, Any]:
+    stmt = pg_insert(quota_balances).values(uid=uid).on_conflict_do_nothing(index_elements=[quota_balances.c.uid])
+    async with Session() as session, session.begin():
+        await session.execute(stmt)
+        result = await session.execute(select(quota_balances).where(quota_balances.c.uid == uid))
+        row = result.mappings().first()
+        if row is None:
+            raise RuntimeError("failed to ensure quota account")
+        return dict(row)
+
+
+async def get_quota_account(uid: int) -> Optional[dict[str, Any]]:
+    async with Session() as session:
+        result = await session.execute(select(quota_balances).where(quota_balances.c.uid == uid))
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+
+async def change_quota_balance(
+    uid: int,
+    delta: int,
+    *,
+    source: str,
+    metadata: Optional[dict[str, Any]] = None,
+    allow_negative: bool = False,
+    set_last_daily: Optional[date] = None,
+) -> dict[str, Any]:
+    if delta == 0 and set_last_daily is None:
+        account = await get_quota_account(uid)
+        if account is None:
+            return await ensure_quota_account(uid)
+        return account
+
+    now = now_utc()
+    metadata_payload = metadata or {}
+
+    async with Session() as session, session.begin():
+        await session.execute(
+            pg_insert(quota_balances)
+            .values(uid=uid)
+            .on_conflict_do_nothing(index_elements=[quota_balances.c.uid])
+        )
+
+        update_values: dict[Any, Any] = {quota_balances.c.updated_at: now}
+        if delta != 0:
+            update_values[quota_balances.c.balance] = quota_balances.c.balance + delta
+        if set_last_daily is not None:
+            update_values[quota_balances.c.last_daily_grant] = set_last_daily
+
+        stmt = (
+            update(quota_balances)
+            .where(quota_balances.c.uid == uid)
+            .values(**update_values)
+            .returning(quota_balances)
+        )
+        result = await session.execute(stmt)
+        row = result.mappings().first()
+        if row is None:
+            raise RuntimeError("quota account missing")
+
+        balance = int(row["balance"])
+        if not allow_negative and balance < 0:
+            raise ValueError("insufficient quota balance")
+
+        if delta != 0:
+            await session.execute(
+                insert(quota_events).values(
+                    uid=uid,
+                    delta=delta,
+                    source=source,
+                    event_key=None,
+                    metadata=metadata_payload,
+                )
+            )
+
+        return dict(row)
+
+
+async def increment_quota(
+    uid: int,
+    amount: int,
+    *,
+    source: str,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+    return await change_quota_balance(uid, amount, source=source, metadata=metadata)
+
+
+async def consume_quota(
+    uid: int,
+    amount: int = 1,
+    *,
+    source: str = "request",
+) -> dict[str, Any]:
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+    return await change_quota_balance(uid, -amount, source=source, allow_negative=False)
+
+
+async def set_last_daily_grant(uid: int, *, grant_date: date) -> dict[str, Any]:
+    return await change_quota_balance(uid, 0, source="daily-grant", set_last_daily=grant_date)
 
 
 async def ensure_free_grant(

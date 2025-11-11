@@ -1,25 +1,186 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional
+from typing import Iterable, List
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app import texts
-from app.config import PAYMENTS_ACTIVE_PROVIDER
+from app.config import REQUEST_PACKAGES, RequestPackage
+
+SUPPORT_URL = "https://t.me/antifraud_support"
 
 
 def _kb(rows: Iterable[Iterable[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[list(row) for row in rows])
 
 
-def kb_main() -> InlineKeyboardMarkup:
+def kb_menu() -> InlineKeyboardMarkup:
     return _kb(
         [
-            [InlineKeyboardButton(text=texts.ACTION_BTN_CHECK, callback_data="chk:new")],
-            [InlineKeyboardButton(text="Подписка", callback_data="m:subs")],
-            [InlineKeyboardButton(text=texts.ACTION_BTN_HISTORY, callback_data="m:history")],
-            [InlineKeyboardButton(text="Профиль", callback_data="m:profile")],
-            [InlineKeyboardButton(text="Помощь", callback_data="m:help")],
+            [InlineKeyboardButton(text="🔎 Запрос", callback_data="req:open")],
+            [InlineKeyboardButton(text="👤 Профиль", callback_data="profile:open")],
+            [InlineKeyboardButton(text="🧾 История", callback_data="hist:open")],
+            [InlineKeyboardButton(text="🆘 Поддержка", callback_data="support:open")],
+        ]
+    )
+
+
+def kb_request_has_balance() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="🧾 История", callback_data="hist:open")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_request_no_balance() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="💳 Купить запросы", callback_data="buy:open")],
+            [InlineKeyboardButton(text="🆘 Как получить запросы бесплатно?", callback_data="ref:freeinfo")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_free_info() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="🤝 Пригласить", callback_data="ref:open")],
+            [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="nav:menu")],
+        ]
+    )
+
+
+def kb_history(*, page: int, has_prev: bool, has_next: bool, masked: bool) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    nav_row: List[InlineKeyboardButton] = []
+    if has_prev:
+        nav_row.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"hist:page:{page - 1}"))
+    if has_next:
+        nav_row.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"hist:page:{page + 1}"))
+    if nav_row:
+        rows.append(nav_row)
+
+    mask_btn = InlineKeyboardButton(
+        text="🙈 Скрывать коды" if not masked else "👁 Показать коды",
+        callback_data="hist:mask:on" if not masked else "hist:mask:off",
+    )
+    rows.append([mask_btn])
+    rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="hist:menu")])
+    return _kb(rows)
+
+
+def kb_profile() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="💳 Купить запросы", callback_data="buy:open")],
+            [
+                InlineKeyboardButton(text="🧾 История", callback_data="hist:open"),
+                InlineKeyboardButton(text="✏️ Изменить мой код АТИ", callback_data="profile:code:edit"),
+            ],
+            [InlineKeyboardButton(text="🎁 Как получить запросы бесплатно?", callback_data="ref:freeinfo")],
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back"),
+                InlineKeyboardButton(text="🔄 Обновить", callback_data="profile:refresh"),
+            ],
+        ]
+    )
+
+
+def kb_single_back(callback: str = "nav:back") -> InlineKeyboardMarkup:
+    return _kb([[InlineKeyboardButton(text="⬅️ Назад", callback_data=callback)]])
+
+
+def _package_button_label(pkg: RequestPackage) -> str:
+    return f"{pkg.qty} — {pkg.price_rub} ₽ ({pkg.discount_hint})"
+
+
+def kb_packages() -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    for pkg in REQUEST_PACKAGES:
+        rows.append(
+            [InlineKeyboardButton(text=_package_button_label(pkg), callback_data=f"buy:pkg:{pkg.qty}")]
+        )
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")])
+    return _kb(rows)
+
+
+def plans_kb_for_provider() -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    for pkg in REQUEST_PACKAGES:
+        rows.append(
+            [InlineKeyboardButton(text=_package_button_label(pkg), callback_data=f"buy:pkg:{pkg.qty}")]
+        )
+    rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="nav:menu")])
+    return _kb(rows)
+
+
+def kb_payment_confirm(qty: int, price_rub: int) -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text=f"Оплатить {price_rub} ₽", callback_data=f"buy:pay:{qty}:{price_rub}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_payment_methods() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="Картой", callback_data="buy:method:card")],
+            [InlineKeyboardButton(text="Telegram Stars", callback_data="buy:method:stars")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_payment_pending(payment_id: str) -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="Проверить оплату", callback_data=f"buy:check:{payment_id}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_payment_success() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="🔎 Сделать запрос", callback_data="req:open")],
+            [InlineKeyboardButton(text="🧾 История", callback_data="hist:open")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_payment_error(payment_id: str) -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="Повторить оплату", callback_data=f"buy:retry:{payment_id}")],
+            [InlineKeyboardButton(text="🆘 Поддержка", callback_data="support:open")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_referral_main() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="🔗 Скопировать ссылку", callback_data="ref:copy")],
+            [InlineKeyboardButton(text="✏️ Создать свою ссылку", callback_data="ref:tag")],
+            [InlineKeyboardButton(text="👥 Мои рефералы", callback_data="ref:list")],
+            [InlineKeyboardButton(text="💸 Вывод средств", callback_data="ref:withdraw")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_support() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="💬 Написать в поддержку", url=SUPPORT_URL)],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
         ]
     )
 
@@ -27,227 +188,29 @@ def kb_main() -> InlineKeyboardMarkup:
 def kb_after_report() -> InlineKeyboardMarkup:
     return _kb(
         [
-            [InlineKeyboardButton(text=texts.ACTION_BTN_CHECK, callback_data="chk:new")],
-            [InlineKeyboardButton(text=texts.ACTION_BTN_HISTORY, callback_data="m:history")],
-            [InlineKeyboardButton(text=texts.ACTION_BTN_MENU, callback_data="m:menu")],
+            [InlineKeyboardButton(text="🔎 Ещё запрос", callback_data="req:open")],
+            [InlineKeyboardButton(text="🧾 История", callback_data="hist:open")],
+            [InlineKeyboardButton(text="⬅️ В меню", callback_data="nav:menu")],
         ]
     )
-
-
-def kb_plans_buy() -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [InlineKeyboardButton(text=texts.BTN_BUY_P20, callback_data="pl:buy:20")],
-            [InlineKeyboardButton(text=texts.BTN_BUY_P50, callback_data="pl:buy:50")],
-            [InlineKeyboardButton(text=texts.BTN_BUY_UNLIM, callback_data="pl:buy:unlim")],
-            [InlineKeyboardButton(text=texts.BTN_PAY_SUPPORT, callback_data="pay:support")],
-            [InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")],
-        ]
-    )
-
-
-def kb_payment_retry() -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [InlineKeyboardButton(text=texts.BTN_REPEAT_PAYMENT, callback_data="pay:repeat")],
-            [InlineKeyboardButton(text=texts.BTN_CHOOSE_ANOTHER_PLAN, callback_data="pay:choose")],
-            [InlineKeyboardButton(text=texts.BTN_PAY_SUPPORT, callback_data="pay:support")],
-        ]
-    )
-
-
-def kb_history(*, page: int = 1, page_size: int = 10, total: Optional[int] = None) -> InlineKeyboardMarkup:
-    rows: List[List[InlineKeyboardButton]] = []
-    if total is not None and page * page_size < total:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=texts.BTN_MORE,
-                    callback_data=f"hist:more:{page + 1}",
-                )
-            ]
-        )
-    rows.append([InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")])
-    return _kb(rows)
-
-
-def kb_help() -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [InlineKeyboardButton(text=texts.BTN_FAQ, callback_data="sup:faq")],
-            [InlineKeyboardButton(text=texts.BTN_SUPPORT, callback_data="sup:contact")],
-            [InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")],
-        ]
-    )
-
-
-def kb_profile() -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [InlineKeyboardButton(text="Настройки", callback_data="m:settings")],
-            [InlineKeyboardButton(text="Реферальная программа", callback_data="m:ref")],
-            [InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")],
-        ]
-    )
-
-
-def _switch_text(label: str, enabled: bool) -> str:
-    return f"{label}: {'✅' if enabled else '❌'}"
-
-
-def kb_settings(
-    *,
-    notif_payments: bool,
-    notif_referrals: bool,
-    mask_history: bool,
-    post_action: str,
-) -> InlineKeyboardMarkup:
-    post_again = post_action == "again"
-    post_menu = post_action == "menu"
-    return _kb(
-        [
-            [
-                InlineKeyboardButton(
-                    text=_switch_text("Уведомления об оплате", notif_payments),
-                    callback_data="set:notif:pay:toggle",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=_switch_text("Уведомления о рефералах", notif_referrals),
-                    callback_data="set:notif:ref:toggle",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=_switch_text("Скрывать историю", mask_history),
-                    callback_data="set:history:mask:toggle",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=_switch_text("После отчёта: снова", post_again),
-                    callback_data="set:post:again",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=_switch_text("После отчёта: меню", post_menu),
-                    callback_data="set:post:menu",
-                )
-            ],
-            [InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")],
-        ]
-    )
-
-
-def kb_referral(*, can_spend: bool, can_withdraw: bool) -> InlineKeyboardMarkup:
-    rows: List[List[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=texts.BTN_MY_REF_LINK, callback_data="ref:link")],
-        [
-            InlineKeyboardButton(text=texts.BTN_REF_COPY, callback_data="ref:copy"),
-            InlineKeyboardButton(text=texts.BTN_REF_SHARE, callback_data="ref:share"),
-        ],
-    ]
-    if can_spend:
-        rows.extend(
-            [
-                [InlineKeyboardButton(text=texts.BTN_REF_SPEND_20, callback_data="ref:spend:20")],
-                [InlineKeyboardButton(text=texts.BTN_REF_SPEND_50, callback_data="ref:spend:50")],
-                [InlineKeyboardButton(text=texts.BTN_REF_SPEND_UNLIM, callback_data="ref:spend:unlim")],
-            ]
-        )
-    if can_withdraw:
-        rows.append([InlineKeyboardButton(text=texts.BTN_REF_WITHDRAW, callback_data="ref:withdraw")])
-    rows.append([InlineKeyboardButton(text=texts.BTN_HOW_IT_WORKS, callback_data="ref:how")])
-    rows.append([InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")])
-    return _kb(rows)
-
-
-def kb_company_ati_ask() -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [InlineKeyboardButton(text=texts.BTN_WHY_ASK, callback_data="ati:why")],
-            [InlineKeyboardButton(text=texts.BTN_SET_LATER, callback_data="ati:later")],
-        ]
-    )
-
-
-def kb_company_ati_saved() -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [InlineKeyboardButton(text=texts.BTN_CHANGE_CODE, callback_data="ati:change")],
-            [InlineKeyboardButton(text=texts.BTN_CHECK_THIS_CODE, callback_data="ati:check")],
-            [InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")],
-        ]
-    )
-
-
-def kb_back_to_menu() -> InlineKeyboardMarkup:
-    return _kb([[InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")]])
-
-
-def kb_support_minimal() -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [InlineKeyboardButton(text=texts.BTN_SUPPORT, callback_data="sup:contact")],
-            [InlineKeyboardButton(text=texts.BTN_FAQ, callback_data="sup:faq")],
-        ]
-    )
-
-
-def kb_sandbox_plans() -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [InlineKeyboardButton(text=texts.BTN_BUY_P20, callback_data="pay:sbox:init:p20")],
-            [InlineKeyboardButton(text=texts.BTN_BUY_P50, callback_data="pay:sbox:init:p50")],
-            [InlineKeyboardButton(text=texts.BTN_BUY_UNLIM, callback_data="pay:sbox:init:unlim")],
-            [InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")],
-        ]
-    )
-
-
-def kb_sandbox_checkout(payment_id: str) -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [
-                InlineKeyboardButton(
-                    text="✅ Оплата прошла (демо)",
-                    callback_data=f"pay:sbox:ok:{payment_id}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="❌ Оплата не прошла (демо)",
-                    callback_data=f"pay:sbox:fail:{payment_id}",
-                )
-            ],
-            [InlineKeyboardButton(text=texts.BTN_MENU, callback_data="m:menu")],
-        ]
-    )
-
-
-def plans_kb_for_provider() -> InlineKeyboardMarkup:
-    if PAYMENTS_ACTIVE_PROVIDER == "sandbox":
-        return kb_sandbox_plans()
-    return kb_plans_buy()
 
 
 __all__ = [
-    "kb_main",
-    "kb_after_report",
-    "kb_plans_buy",
-    "kb_payment_retry",
+    "kb_menu",
+    "kb_request_has_balance",
+    "kb_request_no_balance",
+    "kb_free_info",
     "kb_history",
-    "kb_help",
     "kb_profile",
-    "kb_settings",
-    "kb_referral",
-    "kb_company_ati_ask",
-    "kb_company_ati_saved",
-    "kb_back_to_menu",
-    "kb_support_minimal",
-    "kb_sandbox_plans",
-    "kb_sandbox_checkout",
+    "kb_single_back",
+    "kb_packages",
+    "kb_payment_confirm",
+    "kb_payment_methods",
+    "kb_payment_pending",
+    "kb_payment_success",
+    "kb_payment_error",
     "plans_kb_for_provider",
+    "kb_referral_main",
+    "kb_support",
+    "kb_after_report",
 ]
