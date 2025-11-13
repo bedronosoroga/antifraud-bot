@@ -15,7 +15,7 @@ from app.core import rate_limit
 from app.domain.checks.formatter import build_report_text, choose_report_type
 from app.domain.checks.service import CheckerService
 from app.domain.quotas.service import InsufficientQuotaError
-from app.keyboards import kb_after_report, kb_menu
+from app.keyboards import kb_after_report, kb_menu, kb_request_no_balance
 
 router = Router(name="numeric")
 
@@ -77,7 +77,7 @@ async def on_ati_code(message: Message, state: FSMContext) -> None:
             allowed = False
 
     if not allowed:
-        await message.answer(texts.request_limit_text(), reply_markup=kb_menu())
+        await message.answer(texts.request_limit_text(), reply_markup=kb_request_no_balance())
         return
 
     try:

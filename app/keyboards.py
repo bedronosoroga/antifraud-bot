@@ -16,19 +16,14 @@ def _kb(rows: Iterable[Iterable[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
 def kb_menu() -> InlineKeyboardMarkup:
     return _kb(
         [
-            [InlineKeyboardButton(text="🔎 Запрос", callback_data="req:open")],
-            [InlineKeyboardButton(text="👤 Профиль", callback_data="profile:open")],
-            [InlineKeyboardButton(text="🧾 История", callback_data="hist:open")],
-            [InlineKeyboardButton(text="🆘 Поддержка", callback_data="support:open")],
-        ]
-    )
-
-
-def kb_request_has_balance() -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [InlineKeyboardButton(text="🧾 История", callback_data="hist:open")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+            [
+                InlineKeyboardButton(text="🔎 Запрос", callback_data="req:open"),
+                InlineKeyboardButton(text="👤 Профиль", callback_data="profile:open"),
+            ],
+            [
+                InlineKeyboardButton(text="🧾 История", callback_data="hist:open"),
+                InlineKeyboardButton(text="🆘 Поддержка", callback_data="support:open"),
+            ],
         ]
     )
 
@@ -37,11 +32,18 @@ def kb_request_no_balance() -> InlineKeyboardMarkup:
     return _kb(
         [
             [InlineKeyboardButton(text="💳 Купить запросы", callback_data="buy:open")],
-            [InlineKeyboardButton(text="🆘 Как получить запросы бесплатно?", callback_data="ref:freeinfo")],
+            [InlineKeyboardButton(text="🆘 Как получить запросы бесплатно", callback_data="ref:freeinfo")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
         ]
     )
 
+def kb_request_has_balance() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="🧾 История", callback_data="hist:open")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
 
 def kb_free_info() -> InlineKeyboardMarkup:
     return _kb(
@@ -62,10 +64,11 @@ def kb_history(*, page: int, has_prev: bool, has_next: bool, masked: bool) -> In
     if nav_row:
         rows.append(nav_row)
 
-    if masked:
-        mask_btn = InlineKeyboardButton(text="👁 Показать коды", callback_data="hist:mask:off")
-    else:
-        mask_btn = InlineKeyboardButton(text="🙈 Скрыть коды", callback_data="hist:mask:on")
+    mask_btn = (
+        InlineKeyboardButton(text="👁 Показать коды", callback_data="hist:mask:off")
+        if masked
+        else InlineKeyboardButton(text="🙈 Скрыть коды", callback_data="hist:mask:on")
+    )
     rows.append([mask_btn])
     rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="hist:menu")])
     return _kb(rows)
@@ -77,13 +80,10 @@ def kb_profile() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="💳 Купить запросы", callback_data="buy:open")],
             [
                 InlineKeyboardButton(text="🧾 История", callback_data="hist:open"),
-                InlineKeyboardButton(text="✏️ Изменить мой код АТИ", callback_data="profile:code:edit"),
+                InlineKeyboardButton(text="✏️ Мой код АТИ", callback_data="profile:code:edit"),
             ],
             [InlineKeyboardButton(text="🎁 Как получить запросы бесплатно?", callback_data="ref:freeinfo")],
-            [
-                InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back"),
-                InlineKeyboardButton(text="🔄 Обновить", callback_data="profile:refresh"),
-            ],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
         ]
     )
 
@@ -186,13 +186,7 @@ def kb_support() -> InlineKeyboardMarkup:
 
 
 def kb_after_report() -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [InlineKeyboardButton(text="🔎 Ещё запрос", callback_data="req:open")],
-            [InlineKeyboardButton(text="🧾 История", callback_data="hist:open")],
-            [InlineKeyboardButton(text="⬅️ В меню", callback_data="nav:menu")],
-        ]
-    )
+    return kb_menu()
 
 
 __all__ = [
@@ -204,12 +198,12 @@ __all__ = [
     "kb_profile",
     "kb_single_back",
     "kb_packages",
+    "plans_kb_for_provider",
     "kb_payment_confirm",
     "kb_payment_methods",
     "kb_payment_pending",
     "kb_payment_success",
     "kb_payment_error",
-    "plans_kb_for_provider",
     "kb_referral_main",
     "kb_support",
     "kb_after_report",

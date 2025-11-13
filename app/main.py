@@ -95,27 +95,25 @@ def init_quota_service() -> QuotaService:
 
 def setup_error_handlers(dp: Dispatcher) -> None:
     @dp.errors()
-    async def error_handler(event, data):
-        exception = data.get("exception")
-        if exception is None:
+    async def error_handler(event):
+        exception = getattr(event, "exception", None)
+        if not isinstance(exception, RateLimitExceeded):
             return False
-        if isinstance(exception, RateLimitExceeded):
-            try:
-                update = event.update
-                text = (
-                    "Слишком много запросов. "
-                    f"Подождите {exception.retry_after} сек и попробуйте снова."
-                )
-                if update.message:
-                    await update.message.answer(text)
-                elif update.callback_query:
-                    await update.callback_query.answer(text, show_alert=True)
-            except TelegramAPIError:
-                pass
-            except Exception:
-                logging.exception("Failed to deliver rate limit notification")
-            return True
-        return False
+        try:
+            update = getattr(event, "update", None)
+            text = (
+                "Слишком много запросов. "
+                f"Подождите {exception.retry_after} сек и попробуйте снова."
+            )
+            if update and getattr(update, "message", None):
+                await update.message.answer(text)
+            elif update and getattr(update, "callback_query", None):
+                await update.callback_query.answer(text, show_alert=True)
+        except TelegramAPIError:
+            pass
+        except Exception:
+            logging.exception("Failed to deliver rate limit notification")
+        return True
 
 
 async def start_scheduler(bot: Bot) -> object:

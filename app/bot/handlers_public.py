@@ -125,7 +125,9 @@ async def _pop_screen(state: FSMContext) -> str:
     if len(stack) > 1:
         stack.pop()
         await _set_nav_stack(state, stack)
-    return stack[-1]
+        return stack[-1]
+    await _reset_nav(state)
+    return "menu"
 
 
 async def _reset_nav(state: FSMContext) -> None:
@@ -154,7 +156,7 @@ def _format_msk(dt: datetime) -> str:
 def _start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔎 показать все возможные команды", callback_data="menu:open")]
+            [InlineKeyboardButton(text="🔎 Показать все возможные команды", callback_data="menu:open")]
         ]
     )
 
@@ -317,7 +319,15 @@ def _since_phrase(created_at: datetime) -> str:
 @router.message(CommandStart())
 async def on_start(message: Message, state: FSMContext) -> None:
     from_user = message.from_user
+    is_new_user = False
     if from_user is not None:
+        uid = from_user.id
+        try:
+            record = await dal.get_user(uid)
+            is_new_user = record is None
+        except Exception:
+            logging.exception("failed to read user before /start for %s", uid)
+            is_new_user = False
         try:
             await dal.ensure_user(
                 from_user.id,
@@ -327,7 +337,6 @@ async def on_start(message: Message, state: FSMContext) -> None:
             )
         except Exception:
             logging.exception("ensure_user failed for /start")
-        uid = from_user.id
         await _handle_start_referral(uid, message.text or "")
         await _ensure_free_pack(uid)
 
@@ -335,15 +344,18 @@ async def on_start(message: Message, state: FSMContext) -> None:
     await _reset_nav(state)
     await _set_input_mode(state, INPUT_NONE)
 
-    hero_msg = await message.answer(texts.hero_banner())
-    try:
-        await hero_msg.pin(disable_notification=True)
-    except TelegramBadRequest:
-        pass
-    except Exception:
-        logging.exception("failed to pin hero message")
+    if is_new_user:
+        hero_msg = await message.answer(texts.hero_banner())
+        try:
+            await hero_msg.pin(disable_notification=True)
+        except TelegramBadRequest:
+            pass
+        except Exception:
+            logging.exception("failed to pin hero message")
+        await message.answer(texts.start_onboarding_message(), reply_markup=_start_keyboard())
+        return
 
-    await message.answer(texts.start_onboarding_message(), reply_markup=_start_keyboard())
+    await _show_menu(message, state, replace=True)
 
 
 async def _handle_start_referral(uid: int, payload: str) -> None:
@@ -440,6 +452,9 @@ async def _show_screen_by_id(
     if screen == "buy":
         await _show_payment_packages(target, state, replace=replace)
         return
+    if screen in {"buy-success", "buy-failure", "buy-pending"}:
+        await _show_menu(target, state, replace=True)
+        return
     if screen == "free-info":
         await _show_free_info(target, state)
         return
@@ -447,7 +462,9 @@ async def _show_screen_by_id(
         await _show_support(target, state)
         return
     if screen == "history":
-        await show_history(target, state, replace=replace)
+        data = await state.get_data()
+        page = data.get(HISTORY_PAGE_KEY, 1)
+        await show_history(target, state, page=page, replace=replace)
         return
     if screen == "referral":
         await show_referral(target, state, replace=replace)
@@ -512,7 +529,7 @@ async def show_history(
     limit = 5
     total = await dal.count_history(uid)
     data = await state.get_data()
-    masked = data.get(HISTORY_MASK_KEY, True)
+    masked = data.get(HISTORY_MASK_KEY, False)
     if total == 0:
         if replace:
             await _replace_screen(state, "history")
@@ -556,11 +573,6 @@ async def show_history(
 @router.callback_query(F.data == "profile:open")
 async def on_profile_open(query: CallbackQuery, state: FSMContext) -> None:
     await _show_profile(query, state, replace=False)
-
-
-@router.callback_query(F.data == "profile:refresh")
-async def on_profile_refresh(query: CallbackQuery, state: FSMContext) -> None:
-    await _show_profile(query, state, replace=True)
 
 
 @router.callback_query(F.data == "profile:code:edit")
@@ -684,6 +696,22 @@ async def on_text_input(message: Message, state: FSMContext) -> None:
     if mode == INPUT_WITHDRAW_DETAILS:
         await _handle_withdraw_details_input(message, state)
         return
+
+
+@router.message(CommandStart())
+async def _noop_start_forward(_: Message, state: FSMContext) -> None:
+    # /start обрабатывается отдельным хэндлером, этот нужен чтобы не падал generic
+    await state.update_data({})
+
+
+@router.message(
+    _InputModeActive(active=False),
+    F.text,
+    ~F.text.startswith("/"),
+    ~F.text.regexp(r"^\d{1,7}$"),
+)
+async def on_text_generic(message: Message, state: FSMContext) -> None:
+    await message.answer(texts.hint_send_code(), reply_markup=kb_menu())
 
 
 async def _handle_profile_code_input(message: Message, state: FSMContext) -> None:
