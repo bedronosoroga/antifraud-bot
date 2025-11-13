@@ -62,10 +62,10 @@ def kb_history(*, page: int, has_prev: bool, has_next: bool, masked: bool) -> In
     if nav_row:
         rows.append(nav_row)
 
-    mask_btn = InlineKeyboardButton(
-        text="🙈 Скрывать коды" if not masked else "👁 Показать коды",
-        callback_data="hist:mask:on" if not masked else "hist:mask:off",
-    )
+    if masked:
+        mask_btn = InlineKeyboardButton(text="👁 Показать коды", callback_data="hist:mask:off")
+    else:
+        mask_btn = InlineKeyboardButton(text="🙈 Скрыть коды", callback_data="hist:mask:on")
     rows.append([mask_btn])
     rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="hist:menu")])
     return _kb(rows)
