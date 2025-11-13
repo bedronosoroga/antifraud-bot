@@ -16,6 +16,7 @@ from app.domain.checks.formatter import build_report_text, choose_report_type
 from app.domain.checks.service import CheckerService
 from app.domain.quotas.service import InsufficientQuotaError
 from app.keyboards import kb_after_report, kb_menu, kb_request_no_balance
+from app.bot.state import NAV_STACK_KEY, REPORT_HAS_BALANCE_KEY
 
 router = Router(name="numeric")
 
@@ -27,6 +28,8 @@ class _Runtime:
 
 
 _runtime = _Runtime()
+
+REPORT_SCREEN = "report"
 
 
 def init_checks_runtime(checker: CheckerService, lin_ok: int = 2, exp_ok: int = 5) -> None:
@@ -40,6 +43,26 @@ async def _not_ready_reply(message: Message) -> None:
         "Сервис проверок сейчас недоступен. Попробуйте чуть позже.",
         reply_markup=kb_menu(),
     )
+
+
+async def _get_nav_stack(state: FSMContext) -> list[str]:
+    data = await state.get_data()
+    stack = data.get(NAV_STACK_KEY)
+    if not stack:
+        stack = ["menu"]
+    return stack
+
+
+async def _set_nav_stack(state: FSMContext, stack: list[str]) -> None:
+    await state.update_data({NAV_STACK_KEY: stack})
+
+
+async def _activate_report_screen(state: FSMContext) -> None:
+    stack = await _get_nav_stack(state)
+    if stack[-1] == REPORT_SCREEN:
+        return
+    stack.append(REPORT_SCREEN)
+    await _set_nav_stack(state, stack)
 
 
 @router.message(StateFilter(None), F.text.regexp(r"^\d{1,7}$"))
@@ -66,13 +89,16 @@ async def on_ati_code(message: Message, state: FSMContext) -> None:
         await message.answer(texts.too_many_requests())
         return
 
+    remaining_balance: int | None = None
     if uid in cfg.admin_ids:
         allowed = True
+        remaining_balance = 1
     else:
         quota = bot_runtime.get_quota_service()
         try:
-            await quota.consume(uid, now=now)
+            quota_state = await quota.consume(uid, now=now)
             allowed = True
+            remaining_balance = quota_state.balance
         except InsufficientQuotaError:
             allowed = False
 
@@ -95,7 +121,12 @@ async def on_ati_code(message: Message, state: FSMContext) -> None:
             report_type=report_type,
         )
         report = build_report_text(code, res, _runtime.lin_ok, _runtime.exp_ok)
-        await message.answer(report, reply_markup=kb_after_report())
+        await message.answer(report)
+        has_balance = (remaining_balance is None) or (remaining_balance > 0)
+        actions_keyboard = kb_after_report(has_balance=has_balance)
+        await message.answer(texts.report_actions_text(), reply_markup=actions_keyboard)
+        await state.update_data({REPORT_HAS_BALANCE_KEY: has_balance})
+        await _activate_report_screen(state)
     except Exception:
         await message.answer(
             "Не удалось выполнить проверку. Попробуйте ещё раз.",

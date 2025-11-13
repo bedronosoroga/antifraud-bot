@@ -40,7 +40,10 @@ def kb_request_no_balance() -> InlineKeyboardMarkup:
 def kb_request_has_balance() -> InlineKeyboardMarkup:
     return _kb(
         [
-            [InlineKeyboardButton(text="🧾 История", callback_data="hist:open")],
+            [
+                InlineKeyboardButton(text="🧾 История", callback_data="hist:open"),
+                InlineKeyboardButton(text="ℹ️ О методике", callback_data="meta:method"),
+            ],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
         ]
     )
@@ -82,6 +85,7 @@ def kb_profile() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🧾 История", callback_data="hist:open"),
                 InlineKeyboardButton(text="✏️ Мой код АТИ", callback_data="profile:code:edit"),
             ],
+            [InlineKeyboardButton(text="ℹ️ О методике", callback_data="meta:method")],
             [InlineKeyboardButton(text="🎁 Как получить запросы бесплатно?", callback_data="ref:freeinfo")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
         ]
@@ -185,8 +189,19 @@ def kb_support() -> InlineKeyboardMarkup:
     )
 
 
-def kb_after_report() -> InlineKeyboardMarkup:
-    return kb_menu()
+def kb_after_report(has_balance: bool) -> InlineKeyboardMarkup:
+    if has_balance:
+        return _kb(
+            [
+                [InlineKeyboardButton(text="🔎 Новый запрос", callback_data="req:open")],
+                [
+                    InlineKeyboardButton(text="🧾 История", callback_data="hist:open"),
+                    InlineKeyboardButton(text="ℹ️ О методике", callback_data="meta:method"),
+                ],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+            ]
+        )
+    return kb_request_no_balance()
 
 
 __all__ = [

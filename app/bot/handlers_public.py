@@ -23,6 +23,7 @@ from app.domain.quotas.service import InsufficientQuotaError
 from app.keyboards import (
     kb_free_info,
     kb_history,
+    kb_after_report,
     kb_menu,
     kb_payment_confirm,
     kb_payment_error,
@@ -37,6 +38,7 @@ from app.keyboards import (
     kb_single_back,
     kb_support,
 )
+from app.bot.state import NAV_STACK_KEY, REPORT_HAS_BALANCE_KEY
 
 router = Router(name="public")
 MSK_TZ = ZoneInfo(cfg.tz or "Europe/Moscow")
@@ -48,7 +50,6 @@ class _OnboardingRuntime:
 
 _onboarding = _OnboardingRuntime()
 
-NAV_STACK_KEY = "nav_stack"
 INPUT_MODE_KEY = "input_mode"
 HISTORY_PAGE_KEY = "hist_page"
 HISTORY_MASK_KEY = "hist_mask"
@@ -238,6 +239,25 @@ async def _show_support(target: Message | CallbackQuery, state: FSMContext) -> N
     await _answer(target, texts.support_text(), kb_support())
 
 
+async def _show_method_info(target: Message | CallbackQuery, state: FSMContext, *, replace: bool = False) -> None:
+    if replace:
+        await _replace_screen(state, "method")
+    else:
+        await _push_screen(state, "method")
+    await _answer(target, texts.method_info_text(), kb_single_back())
+
+
+async def _show_report_actions(target: Message | CallbackQuery, state: FSMContext, *, replace: bool = False) -> None:
+    data = await state.get_data()
+    has_balance = bool(data.get(REPORT_HAS_BALANCE_KEY, True))
+    keyboard = kb_after_report(has_balance=has_balance)
+    if replace:
+        await _replace_screen(state, "report")
+    else:
+        await _push_screen(state, "report")
+    await _answer(target, texts.report_actions_text(), keyboard)
+
+
 async def _show_payment_packages(target: Message | CallbackQuery, state: FSMContext, *, replace: bool = False) -> None:
     uid = _user_id(target)
     if uid is None:
@@ -284,6 +304,7 @@ async def _show_profile(target: Message | CallbackQuery, state: FSMContext, *, r
         return
     user = await dal.get_user(uid)
     quota = await _get_quota_service().get_state(uid)
+    history_total = await dal.count_history(uid)
     created_at = user.get("created_at") if user else None
     registered = _format_msk(created_at) if isinstance(created_at, datetime) else "—"
     since_phrase = _since_phrase(created_at) if isinstance(created_at, datetime) else "—"
@@ -294,6 +315,7 @@ async def _show_profile(target: Message | CallbackQuery, state: FSMContext, *, r
         since_phrase=since_phrase,
         balance=quota.balance,
         company_ati=company_ati,
+        has_history=history_total > 0,
     )
     if replace:
         await _replace_screen(state, "profile")
@@ -461,6 +483,9 @@ async def _show_screen_by_id(
     if screen == "support":
         await _show_support(target, state)
         return
+    if screen == "method":
+        await _show_method_info(target, state, replace=replace)
+        return
     if screen == "history":
         data = await state.get_data()
         page = data.get(HISTORY_PAGE_KEY, 1)
@@ -468,6 +493,9 @@ async def _show_screen_by_id(
         return
     if screen == "referral":
         await show_referral(target, state, replace=replace)
+        return
+    if screen == "report":
+        await _show_report_actions(target, state, replace=replace)
         return
     await _show_menu(target, state, replace=True)
 
@@ -477,7 +505,8 @@ async def _show_screen_by_id(
 
 @router.callback_query(F.data == "req:open")
 async def on_request_open(query: CallbackQuery, state: FSMContext) -> None:
-    await _show_request(query, state, replace=False)
+    replace = await _current_screen(state) == "report"
+    await _show_request(query, state, replace=replace)
 
 
 @router.callback_query(F.data == "hist:open")
@@ -582,6 +611,12 @@ async def on_profile_code_edit(query: CallbackQuery, state: FSMContext) -> None:
     current = user.get("company_ati") if user else None
     await _set_input_mode(state, INPUT_PROFILE_ATI)
     await _answer(query, texts.profile_code_prompt(current), kb_single_back())
+
+
+@router.callback_query(F.data == "meta:method")
+async def on_method_info_open(query: CallbackQuery, state: FSMContext) -> None:
+    replace = await _current_screen(state) == "method"
+    await _show_method_info(query, state, replace=replace)
 
 
 @router.callback_query(F.data == "ref:freeinfo")
