@@ -75,11 +75,7 @@ async def init_free() -> None:
     try:
         free_service = FreeService(total=FREE["total"], ttl_hours=FREE["ttl_hours"])
         init_onboarding_runtime(free=free_service)
-        logging.info(
-            "Free runtime ready: %s checks / %s hours",
-            FREE["total"],
-            FREE["ttl_hours"],
-        )
+        logging.info("Free runtime initialized")
     except Exception:
         logging.exception("Failed to initialize free runtime")
 

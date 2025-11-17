@@ -24,6 +24,9 @@ from app.keyboards import (
     kb_free_info,
     kb_history,
     kb_after_report,
+    kb_method_page1,
+    kb_method_page2,
+    kb_method_page3,
     kb_menu,
     kb_payment_confirm,
     kb_payment_error,
@@ -55,6 +58,7 @@ HISTORY_PAGE_KEY = "hist_page"
 HISTORY_MASK_KEY = "hist_mask"
 HISTORY_ORIGIN_KEY = "hist_origin"
 WITHDRAW_DATA_KEY = "withdraw_data"
+METHOD_PAGE_KEY = "method_page"
 
 INPUT_NONE = "none"
 INPUT_PROFILE_ATI = "profile:code:edit"
@@ -239,12 +243,30 @@ async def _show_support(target: Message | CallbackQuery, state: FSMContext) -> N
     await _answer(target, texts.support_text(), kb_support())
 
 
-async def _show_method_info(target: Message | CallbackQuery, state: FSMContext, *, replace: bool = False) -> None:
+def _method_page_content(page: int) -> tuple[str, InlineKeyboardMarkup]:
+    if page == 1:
+        return texts.method_page1_text(), kb_method_page1()
+    if page == 2:
+        return texts.method_page2_text(), kb_method_page2()
+    if page == 3:
+        return texts.method_page3_text(), kb_method_page3()
+    raise ValueError("invalid method page")
+
+
+async def _show_method_page(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    *,
+    page: int,
+    replace: bool = False,
+) -> None:
+    text, keyboard = _method_page_content(page)
     if replace:
         await _replace_screen(state, "method")
     else:
         await _push_screen(state, "method")
-    await _answer(target, texts.method_info_text(), kb_single_back())
+    await state.update_data({METHOD_PAGE_KEY: page})
+    await _answer(target, text, keyboard)
 
 
 async def _show_report_actions(target: Message | CallbackQuery, state: FSMContext, *, replace: bool = False) -> None:
@@ -484,7 +506,9 @@ async def _show_screen_by_id(
         await _show_support(target, state)
         return
     if screen == "method":
-        await _show_method_info(target, state, replace=replace)
+        data = await state.get_data()
+        page = int(data.get(METHOD_PAGE_KEY, 1) or 1)
+        await _show_method_page(target, state, page=page, replace=replace)
         return
     if screen == "history":
         data = await state.get_data()
@@ -613,10 +637,26 @@ async def on_profile_code_edit(query: CallbackQuery, state: FSMContext) -> None:
     await _answer(query, texts.profile_code_prompt(current), kb_single_back())
 
 
-@router.callback_query(F.data == "meta:method")
-async def on_method_info_open(query: CallbackQuery, state: FSMContext) -> None:
-    replace = await _current_screen(state) == "method"
-    await _show_method_info(query, state, replace=replace)
+@router.callback_query(F.data == "method:open")
+async def on_method_open(query: CallbackQuery, state: FSMContext) -> None:
+    await _show_method_page(query, state, page=1, replace=False)
+
+
+@router.callback_query(F.data.startswith("meth:page:"))
+async def on_method_page(query: CallbackQuery, state: FSMContext) -> None:
+    token = query.data.split(":")[-1]
+    try:
+        page = int(token)
+        text, keyboard = _method_page_content(page)
+    except (ValueError, TypeError):
+        await query.answer("Неверная страница", show_alert=True)
+        return
+    await state.update_data({METHOD_PAGE_KEY: page})
+    try:
+        await query.message.edit_text(text, reply_markup=keyboard)
+    except TelegramBadRequest:
+        await query.message.answer(text, reply_markup=keyboard)
+    await query.answer()
 
 
 @router.callback_query(F.data == "ref:freeinfo")

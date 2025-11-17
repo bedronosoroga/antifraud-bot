@@ -42,7 +42,7 @@ def kb_request_has_balance() -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton(text="🧾 История", callback_data="hist:open"),
-                InlineKeyboardButton(text="ℹ️ О методике", callback_data="meta:method"),
+                InlineKeyboardButton(text="ℹ️ О методике", callback_data="method:open"),
             ],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
         ]
@@ -80,12 +80,14 @@ def kb_history(*, page: int, has_prev: bool, has_next: bool, masked: bool) -> In
 def kb_profile() -> InlineKeyboardMarkup:
     return _kb(
         [
-            [InlineKeyboardButton(text="💳 Купить запросы", callback_data="buy:open")],
             [
+                InlineKeyboardButton(text="💳 Купить запросы", callback_data="buy:open"),
                 InlineKeyboardButton(text="🧾 История", callback_data="hist:open"),
+            ],
+            [
+                InlineKeyboardButton(text="ℹ️ О методике", callback_data="method:open"),
                 InlineKeyboardButton(text="✏️ Мой код АТИ", callback_data="profile:code:edit"),
             ],
-            [InlineKeyboardButton(text="ℹ️ О методике", callback_data="meta:method")],
             [InlineKeyboardButton(text="🎁 Как получить запросы бесплатно?", callback_data="ref:freeinfo")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
         ]
@@ -196,12 +198,44 @@ def kb_after_report(has_balance: bool) -> InlineKeyboardMarkup:
                 [InlineKeyboardButton(text="🔎 Новый запрос", callback_data="req:open")],
                 [
                     InlineKeyboardButton(text="🧾 История", callback_data="hist:open"),
-                    InlineKeyboardButton(text="ℹ️ О методике", callback_data="meta:method"),
+                    InlineKeyboardButton(text="ℹ️ О методике", callback_data="method:open"),
                 ],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
             ]
         )
     return kb_request_no_balance()
+
+
+def kb_method_page1() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="Вперёд ▶️", callback_data="meth:page:2")],
+            [InlineKeyboardButton(text="⬅️ В меню", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_method_page2() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="meth:page:1"),
+                InlineKeyboardButton(text="Вперёд ▶️", callback_data="meth:page:3"),
+            ],
+            [InlineKeyboardButton(text="⬅️ В меню", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_method_page3() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="meth:page:2"),
+            ],
+            [InlineKeyboardButton(text="⬅️ В меню", callback_data="nav:back")],
+        ]
+    )
 
 
 __all__ = [
@@ -222,4 +256,7 @@ __all__ = [
     "kb_referral_main",
     "kb_support",
     "kb_after_report",
+    "kb_method_page1",
+    "kb_method_page2",
+    "kb_method_page3",
 ]
