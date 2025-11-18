@@ -11,6 +11,7 @@ from app.config import (
     REF_TIERS,
     REF_WITHDRAW_FEE_PERCENT,
     REF_WITHDRAW_MIN_KOP,
+    REF_WITHDRAW_MIN_USD,
     cfg,
 )
 from app.core import db as dal
@@ -355,7 +356,25 @@ async def create_custom_tag(uid: int, tag: str) -> str:
 
 
 async def request_payout(uid: int, *, amount_kop: int, details: Optional[dict] = None) -> PayoutRequest:
-    if amount_kop < REF_WITHDRAW_MIN_KOP:
+    details_payload: dict | None = details if isinstance(details, dict) else None
+    amount_usdt: Optional[float] = None
+    if details_payload is not None:
+        raw_usdt = details_payload.get("amount_usdt")
+        try:
+            amount_usdt = float(raw_usdt)
+        except (TypeError, ValueError):
+            amount_usdt = None
+
+    if amount_usdt is not None and amount_usdt < REF_WITHDRAW_MIN_USD:
+        return PayoutRequest(
+            amount_kop=amount_kop,
+            net_amount_kop=0,
+            fee_kop=0,
+            accepted=False,
+            reason="too_small",
+        )
+
+    if amount_usdt is None and amount_kop < REF_WITHDRAW_MIN_KOP:
         return PayoutRequest(
             amount_kop=amount_kop,
             net_amount_kop=0,
@@ -387,7 +406,12 @@ async def request_payout(uid: int, *, amount_kop: int, details: Optional[dict] =
             reason="insufficient_funds",
         )
 
-    await dal.add_payout(uid, amount_kop=amount_kop, status="waiting", details=details)
+    await dal.add_payout(
+        uid,
+        amount_kop=amount_kop,
+        status="waiting",
+        details=details_payload,
+    )
     return PayoutRequest(
         amount_kop=amount_kop,
         net_amount_kop=net_kop,

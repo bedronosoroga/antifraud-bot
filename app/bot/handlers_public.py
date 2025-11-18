@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Optional
+from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
@@ -14,10 +14,11 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app import texts
 from app.bot import runtime as bot_runtime
-from app.config import REQUEST_PACKAGES, RequestPackage, cfg
+from app.config import REQUEST_PACKAGES, RequestPackage, REF_WITHDRAW_MIN_USD, cfg
 from app.core import db as dal
 from app.domain.payments import sandbox as sandbox_pay
 from app.domain.referrals import service as referral_service
+from app.domain.rates import service as rates_service
 from app.domain.onboarding.free import FreeService
 from app.domain.quotas.service import InsufficientQuotaError
 from app.keyboards import (
@@ -674,21 +675,6 @@ async def on_referral_open(query: CallbackQuery, state: FSMContext) -> None:
     await show_referral(query, state, replace=False)
 
 
-@router.callback_query(F.data == "ref:copy")
-async def on_referral_copy(query: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-    link = data.get("ref_link")
-    if not link:
-        await show_referral(query, state, replace=True)
-        data = await state.get_data()
-        link = data.get("ref_link")
-    if link:
-        await query.message.answer(f"Ваша ссылка:\n{link}")
-        await query.answer("Отправили ссылку в чат.")
-    else:
-        await query.answer("Ссылка недоступна", show_alert=True)
-
-
 @router.callback_query(F.data == "ref:list")
 async def on_referral_list(query: CallbackQuery, state: FSMContext) -> None:
     uid = _user_id(query)
@@ -714,7 +700,15 @@ async def on_referral_withdraw(query: CallbackQuery, state: FSMContext) -> None:
     info = await referral_service.get_info(uid)
     await _push_screen(state, "referral:withdraw")
     await _set_input_mode(state, INPUT_WITHDRAW_AMOUNT)
-    await state.update_data({WITHDRAW_DATA_KEY: {}})
+    payload: dict[str, Any] = {}
+    try:
+        rate = await rates_service.get_usdt_rub_rate()
+    except Exception:
+        logging.exception("failed to fetch usdt/rub rate")
+    else:
+        payload["rate"] = rate
+        payload["rate_ts"] = datetime.now(timezone.utc).timestamp()
+    await state.update_data({WITHDRAW_DATA_KEY: payload})
     await _answer(
         query,
         texts.ref_withdraw_text(balance_kop=info["balance_kop"]),
@@ -736,7 +730,6 @@ async def show_referral(
     slug = info.get("custom_tag") or info.get("code")
     bot_username = await _get_bot_username(target, state)
     link = f"https://t.me/{bot_username}?start={slug}"
-    await state.update_data({"ref_link": link})
     text = texts.ref_program_text(
         link=link,
         balance_kop=info.get("balance_kop", 0),
@@ -753,7 +746,7 @@ async def show_referral(
         await _replace_screen(state, "referral")
     else:
         await _push_screen(state, "referral")
-    await _answer(target, text, kb_referral_main())
+    await _answer(target, text, kb_referral_main(link))
 
 
 @router.message(_InputModeActive())
@@ -822,7 +815,6 @@ async def _handle_ref_tag_input(message: Message, state: FSMContext) -> None:
     await _set_input_mode(state, INPUT_NONE)
     bot_username = await _get_bot_username(message, state)
     link = f"https://t.me/{bot_username}?start={new_tag}"
-    await state.update_data({"ref_link": link})
     await message.answer(f"Готово. Ваша ссылка: {link}")
     await show_referral(message, state, replace=True)
 
@@ -831,6 +823,8 @@ async def _handle_withdraw_amount_input(message: Message, state: FSMContext) -> 
     uid = _user_id(message)
     if uid is None:
         return
+    data = await state.get_data()
+    payload: dict[str, Any] = dict(data.get(WITHDRAW_DATA_KEY) or {})
     raw = (message.text or "").strip().replace(",", ".")
     try:
         value = Decimal(raw)
@@ -841,10 +835,49 @@ async def _handle_withdraw_amount_input(message: Message, state: FSMContext) -> 
     if amount_kop <= 0:
         await message.answer("Сумма должна быть положительной.")
         return
-    await state.update_data({WITHDRAW_DATA_KEY: {"amount_kop": amount_kop}})
+    now_ts = datetime.now(timezone.utc).timestamp()
+    rate = None
+    stored_rate = payload.get("rate")
+    stored_ts = payload.get("rate_ts")
+    if isinstance(stored_rate, (int, float)) and isinstance(stored_ts, (int, float)):
+        if now_ts - float(stored_ts) <= 5 * 60:
+            rate = float(stored_rate)
+    if rate is None:
+        try:
+            rate = await rates_service.get_usdt_rub_rate()
+        except Exception:
+            logging.exception("failed to fetch usdt/rub rate")
+            await message.answer("Сейчас не удалось получить курс USDT. Попробуйте ещё раз чуть позже.")
+            return
+        payload["rate"] = rate
+        payload["rate_ts"] = now_ts
+    if rate <= 0:
+        await message.answer("Сейчас не удалось получить курс USDT. Попробуйте ещё раз чуть позже.")
+        return
+    amount_rub = amount_kop // 100
+    amount_usdt = (amount_kop / 100) / rate
+    if amount_usdt < REF_WITHDRAW_MIN_USD:
+        await message.answer(
+            (
+                "Сумма слишком мала.\n\n"
+                f"Курс 1 USDT ≈ {rate:.2f} ₽.\n"
+                f"Ваши {amount_rub} ₽ ≈ {amount_usdt:.2f} USDT.\n"
+                f"Минимальная сумма для вывода — {REF_WITHDRAW_MIN_USD} USDT. Попробуйте указать большую сумму."
+            ),
+            reply_markup=kb_single_back("ref:open"),
+        )
+        return
+    payload.update(
+        {
+            "amount_kop": amount_kop,
+            "amount_rub": amount_rub,
+            "amount_usdt": amount_usdt,
+        }
+    )
+    await state.update_data({WITHDRAW_DATA_KEY: payload})
     await _set_input_mode(state, INPUT_WITHDRAW_DETAILS)
     await message.answer(
-        "Укажите реквизиты (Telegram Stars или USDT + сеть). Пример: \"USDT TON, адрес ...\"",
+        texts.ref_withdraw_details_prompt(amount_rub=amount_rub, amount_usdt=amount_usdt),
         reply_markup=kb_single_back("ref:open"),
     )
 
@@ -854,30 +887,41 @@ async def _handle_withdraw_details_input(message: Message, state: FSMContext) ->
     if uid is None:
         return
     data = await state.get_data()
-    payload = data.get(WITHDRAW_DATA_KEY) or {}
+    payload = dict(data.get(WITHDRAW_DATA_KEY) or {})
     amount_kop = payload.get("amount_kop")
+    amount_usdt = payload.get("amount_usdt")
     if not amount_kop:
         await message.answer("Сначала укажите сумму.")
         await _set_input_mode(state, INPUT_WITHDRAW_AMOUNT)
         return
     requisites = (message.text or "").strip()
+    details_payload: dict[str, Any] = {"requisites": requisites}
+    if amount_usdt is not None:
+        details_payload["amount_usdt"] = float(amount_usdt)
     result = await referral_service.request_payout(
         uid,
         amount_kop=amount_kop,
-        details={"requisites": requisites},
+        details=details_payload,
     )
     if not result["accepted"]:
         reason = result.get("reason") or "error"
         if reason == "too_small":
-            await message.answer("Сумма меньше минимума на вывод.")
+            await message.answer("Сумма меньше минимума на вывод.", reply_markup=kb_single_back("ref:open"))
         elif reason == "insufficient_funds":
-            await message.answer("Недостаточно средств для вывода.")
+            await message.answer("Недостаточно средств для вывода.", reply_markup=kb_single_back("ref:open"))
         else:
-            await message.answer("Не удалось создать заявку. Попробуйте позже.")
+            await message.answer("Не удалось создать заявку. Попробуйте позже.", reply_markup=kb_single_back("ref:open"))
         return
     await _set_input_mode(state, INPUT_NONE)
+    rate_snapshot = {}
+    if "rate" in payload and "rate_ts" in payload:
+        rate_snapshot = {"rate": payload.get("rate"), "rate_ts": payload.get("rate_ts")}
+    await state.update_data({WITHDRAW_DATA_KEY: rate_snapshot})
     amount_text = texts.fmt_rub_from_kop(amount_kop)
-    await message.answer(f"Заявка на вывод {amount_text} принята. Мы сообщим, когда будет выполнено.")
+    await message.answer(
+        f"Заявка на вывод {amount_text} принята. Мы сообщим, когда будет выполнено.",
+        reply_markup=kb_single_back("ref:open"),
+    )
     await show_referral(message, state, replace=True)
 
 

@@ -22,6 +22,7 @@ __all__ = [
     "REF_WITHDRAW_MIN_USD",
     "REF_WITHDRAW_FEE_PERCENT",
     "REF_SECOND_LINE_PERCENT",
+    "COINMARKETCAP_API_KEY",
     "REQUEST_PACKAGES",
     "PAYMENTS_ACTIVE_PROVIDER",
     "PAYMENTS_SANDBOX_NOTE",
@@ -308,6 +309,7 @@ REF_SECOND_LINE_PERCENT: int = 5
 REF_WITHDRAW_MIN_KOP: int = 1_000_00
 REF_WITHDRAW_MIN_USD: int = 10
 REF_WITHDRAW_FEE_PERCENT: int = 8
+COINMARKETCAP_API_KEY: str | None = env_str("COINMARKETCAP_API_KEY")
 
 REQUEST_PACKAGES: list[RequestPackage] = [
     RequestPackage(qty=5, price_rub=99, unit_price_rub=19.8, discount_hint="~20 ₽/шт"),

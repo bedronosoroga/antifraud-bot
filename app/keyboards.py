@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable, List
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.config import REQUEST_PACKAGES, RequestPackage
 
@@ -170,14 +170,19 @@ def kb_payment_error(payment_id: str) -> InlineKeyboardMarkup:
     )
 
 
-def kb_referral_main() -> InlineKeyboardMarkup:
+def kb_referral_main(link: str) -> InlineKeyboardMarkup:
     return _kb(
         [
-            [InlineKeyboardButton(text="🔗 Скопировать ссылку", callback_data="ref:copy")],
+            [
+                InlineKeyboardButton(
+                    text="🔗 Скопировать ссылку",
+                    copy_text=CopyTextButton(text=link),
+                )
+            ],
             [InlineKeyboardButton(text="✏️ Создать свою ссылку", callback_data="ref:tag")],
             [InlineKeyboardButton(text="👥 Мои рефералы", callback_data="ref:list")],
             [InlineKeyboardButton(text="💸 Вывод средств", callback_data="ref:withdraw")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="profile:open")],
         ]
     )
 
