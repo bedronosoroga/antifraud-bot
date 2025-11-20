@@ -20,10 +20,35 @@ from app.bot.handlers_numeric import init_checks_runtime
 from app.bot import runtime as bot_runtime
 
 logger = logging.getLogger(__name__)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 CATALOG_DEBOUNCE_SECONDS = 60
 CATALOG_CHECK_INTERVAL = 60
+CATALOG_HEARTBEAT_INTERVAL = 3600
 _catalog_reload_lock = asyncio.Lock()
+_catalog_heartbeat = {
+    "runs": 0,
+    "reloads": 0,
+    "failures": 0,
+    "last_log_ts": datetime.now(timezone.utc).timestamp(),
+}
+
+
+def _maybe_log_catalog_heartbeat(now_ts: float) -> None:
+    if now_ts - _catalog_heartbeat["last_log_ts"] < CATALOG_HEARTBEAT_INTERVAL:
+        return
+    last_reload = bot_runtime.get_catalog_last_reload_mtime()
+    logger.info(
+        "Catalog watcher heartbeat: runs=%s, reloads=%s, failures=%s, last_reload_mtime=%s",
+        _catalog_heartbeat["runs"],
+        _catalog_heartbeat["reloads"],
+        _catalog_heartbeat["failures"],
+        last_reload,
+    )
+    _catalog_heartbeat["runs"] = 0
+    _catalog_heartbeat["reloads"] = 0
+    _catalog_heartbeat["failures"] = 0
+    _catalog_heartbeat["last_log_ts"] = now_ts
 
 def build_scheduler(bot: Bot) -> AsyncIOScheduler:
     del bot  # legacy signature; scheduler currently does not use bot
@@ -49,30 +74,36 @@ async def job_daily_digest(bot: Bot) -> None:
 
 
 async def job_catalog_reload_if_needed() -> None:
-    latest_mtime = _latest_excel_mtime()
-    if latest_mtime is None:
-        return
-    bot_runtime.set_catalog_last_seen_mtime(latest_mtime)
-    async with _catalog_reload_lock:
-        current_reload_mtime = bot_runtime.get_catalog_last_reload_mtime()
-        if current_reload_mtime is not None and latest_mtime <= current_reload_mtime:
+    now_ts = datetime.now(timezone.utc).timestamp()
+    _catalog_heartbeat["runs"] += 1
+    try:
+        latest_mtime = _latest_excel_mtime()
+        if latest_mtime is None:
             return
-        now_ts = datetime.now(timezone.utc).timestamp()
-        if now_ts - latest_mtime < CATALOG_DEBOUNCE_SECONDS:
-            return
-        try:
-            catalog = await asyncio.to_thread(load_catalog, cfg.paths)
-        except Exception:
-            logger.exception("Failed to reload Excel catalog; keeping existing data")
-            return
-        checker = CheckerService(catalog, lin_ok=cfg.lin_ok, exp_ok=cfg.exp_ok)
-        cache = AtiCodeCache()
-        cache.refresh_from_catalog(catalog)
-        init_checks_runtime(checker, cfg.lin_ok, cfg.exp_ok)
-        bot_runtime.set_ati_code_cache(cache)
         bot_runtime.set_catalog_last_seen_mtime(latest_mtime)
-        bot_runtime.set_catalog_last_reload_mtime(latest_mtime)
-        logger.info("ATI catalog reloaded: %s codes (mtime=%s)", cache.size(), latest_mtime)
+        async with _catalog_reload_lock:
+            current_reload_mtime = bot_runtime.get_catalog_last_reload_mtime()
+            if current_reload_mtime is not None and latest_mtime <= current_reload_mtime:
+                return
+            if now_ts - latest_mtime < CATALOG_DEBOUNCE_SECONDS:
+                return
+            try:
+                catalog = await asyncio.to_thread(load_catalog, cfg.paths)
+            except Exception:
+                _catalog_heartbeat["failures"] += 1
+                logger.exception("Failed to reload Excel catalog; keeping existing data")
+                return
+            checker = CheckerService(catalog, lin_ok=cfg.lin_ok, exp_ok=cfg.exp_ok)
+            cache = AtiCodeCache()
+            cache.refresh_from_catalog(catalog)
+            init_checks_runtime(checker, cfg.lin_ok, cfg.exp_ok)
+            bot_runtime.set_ati_code_cache(cache)
+            bot_runtime.set_catalog_last_seen_mtime(latest_mtime)
+            bot_runtime.set_catalog_last_reload_mtime(latest_mtime)
+            _catalog_heartbeat["reloads"] += 1
+            logger.info("ATI catalog reloaded: %s codes (mtime=%s)", cache.size(), latest_mtime)
+    finally:
+        _maybe_log_catalog_heartbeat(now_ts)
 
 
 def _latest_excel_mtime() -> float | None:

@@ -17,8 +17,10 @@ from app.core import db as dal
 from app.core.rate_limit import RateLimitExceeded
 from app.core.scheduler import create as create_scheduler
 
-from app.domain.checks.loader import load_catalog
+from app.domain.checks.loader import load_catalog, DataCatalog
 from app.domain.checks.service import CheckerService
+from app.domain.catalog_cache.service import AtiCodeCache
+from app.domain.ati.service import AtiVerifier
 
 from app.domain.onboarding.free import FREE, FreeService
 from app.domain.subs import service as subs_service
@@ -54,6 +56,11 @@ async def init_database() -> None:
     logging.info("Database connection established")
 
 
+def _catalog_latest_mtime(catalog: DataCatalog) -> float | None:
+    mtimes = [source.mtime for source in catalog.carriers + catalog.forwarders + catalog.blacklist]
+    return max(mtimes) if mtimes else None
+
+
 async def init_checks() -> None:
     try:
         catalog = load_catalog(cfg.paths)
@@ -63,12 +70,21 @@ async def init_checks() -> None:
 
     if catalog is None:
         logging.warning("Checks catalog is empty; continuing without data")
-        init_checks_runtime(None, cfg.lin_ok, cfg.exp_ok)  # type: ignore[arg-type]
+        init_checks_runtime(None, cfg.lin_ok, cfg.exp_ok)
+        bot_runtime.set_ati_code_cache(None)
+        bot_runtime.set_catalog_last_seen_mtime(None)
+        bot_runtime.set_catalog_last_reload_mtime(None)
         return
 
     checker = CheckerService(catalog, lin_ok=cfg.lin_ok, exp_ok=cfg.exp_ok)
     init_checks_runtime(checker, cfg.lin_ok, cfg.exp_ok)
-    logging.info("Checks runtime initialized")
+    cache = AtiCodeCache()
+    cache.refresh_from_catalog(catalog)
+    bot_runtime.set_ati_code_cache(cache)
+    latest_mtime = _catalog_latest_mtime(catalog)
+    bot_runtime.set_catalog_last_seen_mtime(latest_mtime)
+    bot_runtime.set_catalog_last_reload_mtime(latest_mtime)
+    logging.info("Checks runtime initialized (ATI codes: %s)", cache.size())
 
 
 async def init_free() -> None:
@@ -130,6 +146,16 @@ async def shutdown(ctx: AppContext) -> None:
     logging.info("Shutdown complete")
 
 
+def init_ati_verifier() -> None:
+    try:
+        verifier = AtiVerifier(cfg.ati)
+        bot_runtime.set_ati_verifier(verifier)
+        logging.info("ATI verifier initialized with %s tokens", len(cfg.ati.tokens))
+    except Exception:
+        bot_runtime.set_ati_verifier(None)
+        logging.exception("Failed to initialize ATI verifier")
+
+
 async def _main() -> None:
     setup_logging()
     logging.info("Starting antifraud bot")
@@ -137,6 +163,7 @@ async def _main() -> None:
     await init_database()
     await init_checks()
     await init_free()
+    init_ati_verifier()
     init_quota_service()
 
     bot = Bot(

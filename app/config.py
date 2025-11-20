@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -11,6 +11,7 @@ __all__ = [
     "SubscriptionPlan",
     "RequestPackage",
     "Cfg",
+    "AtiConfig",
     "PostgresCfg",
     "PG",
     "RUN_MIGRATIONS",
@@ -96,6 +97,39 @@ def env_set_int(name: str) -> set[int]:
     return result
 
 
+def env_float(name: str, default: float | None = None) -> float | None:
+    """Return the value of an environment variable parsed as float."""
+
+    value = env_str(name)
+    if value is None or value.strip() == "":
+        return default
+    try:
+        return float(value.strip())
+    except ValueError as exc:
+        raise ValueError(f"Environment variable {name} must be a float") from exc
+
+
+def env_list(name: str, *, separators: str = ",;") -> list[str]:
+    """Return list from env variable split by separators."""
+
+    raw = env_str(name, "") or ""
+    tokens: list[str] = []
+    current = []
+    seps = set(separators)
+    for ch in raw:
+        if ch in seps:
+            token = "".join(current).strip()
+            if token:
+                tokens.append(token)
+            current = []
+        else:
+            current.append(ch)
+    token = "".join(current).strip()
+    if token:
+        tokens.append(token)
+    return tokens
+
+
 def env_path(name: str, default: str) -> Path:
     """Return a path from an environment variable resolved relative to the project base dir."""
     raw_value = os.getenv(name)
@@ -148,6 +182,14 @@ class RequestPackage:
 
 
 @dataclass(frozen=True)
+class AtiConfig:
+    base_url: str = "https://api.ati.su"
+    tokens: list[str] = field(default_factory=list)
+    request_timeout_sec: float = 3.0
+    cache_ttl_hours: int = 24
+
+
+@dataclass(frozen=True)
 class Cfg:
     """Application configuration container."""
 
@@ -162,6 +204,7 @@ class Cfg:
     free_ttl_hours: int
     ref_hold_days: int
     allow_wallet_purchases_only_in_referrals: bool
+    ati: AtiConfig
 
 
 @dataclass(frozen=True)
@@ -260,6 +303,13 @@ def load_config() -> Cfg:
         raise RuntimeError("REF_HOLD_DAYS must be an integer")
 
     tz = env_str("TZ", "Europe/Moscow") or "Europe/Moscow"
+    ati_cfg = AtiConfig(
+        base_url=env_str("ATI_API_BASE_URL", "https://api.ati.su") or "https://api.ati.su",
+        tokens=env_list("ATI_API_TOKENS"),
+        request_timeout_sec=env_float("ATI_API_TIMEOUT_SEC", 3.0) or 3.0,
+        cache_ttl_hours=env_int("ATI_CACHE_TTL_HOURS", 24) or 24,
+    )
+
     config = Cfg(
         bot_token=bot_token,
         admin_ids=env_set_int("ADMIN_IDS"),
@@ -272,6 +322,7 @@ def load_config() -> Cfg:
         free_ttl_hours=free_ttl_hours,
         ref_hold_days=ref_hold_days,
         allow_wallet_purchases_only_in_referrals=True,
+        ati=ati_cfg,
     )
     return config
 

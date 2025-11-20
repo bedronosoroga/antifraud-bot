@@ -301,6 +301,23 @@ async def _show_payment_packages(target: Message | CallbackQuery, state: FSMCont
     await _answer(target, texts.payment_packages_intro(quota.balance), kb_packages())
 
 
+async def _show_payment_methods_screen(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    *,
+    replace: bool,
+) -> bool:
+    data = await state.get_data()
+    if not data.get("buy_package_code"):
+        return False
+    if replace:
+        await _replace_screen(state, "buy")
+    else:
+        await _push_screen(state, "buy")
+    await _answer(target, texts.payment_method_text(), kb_payment_methods())
+    return True
+
+
 async def _show_payment_pending(target: Message | CallbackQuery, state: FSMContext, payment_id: str) -> None:
     await state.update_data({"buy_payment_id": payment_id})
     await _replace_screen(state, "buy-pending")
@@ -465,6 +482,12 @@ async def on_nav_back(query: CallbackQuery, state: FSMContext) -> None:
     current = await _current_screen(state)
     if current == "buy-pending":
         await _handle_payment_cancel(query, state)
+        return
+    if current == "buy-failure":
+        await _set_input_mode(state, INPUT_NONE)
+        restored = await _show_payment_methods_screen(query, state, replace=True)
+        if not restored:
+            await _show_payment_packages(query, state, replace=True)
         return
     await _set_input_mode(state, INPUT_NONE)
     screen = await _pop_screen(state)
@@ -779,7 +802,7 @@ async def _noop_start_forward(_: Message, state: FSMContext) -> None:
     ~F.text.regexp(r"^\d{1,7}$"),
 )
 async def on_text_generic(message: Message, state: FSMContext) -> None:
-    await message.answer(texts.hint_send_code(), reply_markup=kb_menu())
+    await message.answer(texts.err_need_digits_upto_7(), reply_markup=kb_menu())
 
 
 async def _handle_profile_code_input(message: Message, state: FSMContext) -> None:

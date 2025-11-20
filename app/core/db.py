@@ -189,6 +189,15 @@ user_notifications = Table(
 
 Index("idx_un_uid_kind", user_notifications.c.uid, user_notifications.c.kind)
 
+ati_code_cache = Table(
+    "ati_code_cache",
+    metadata,
+    Column("ati_id", String(10), primary_key=True),
+    Column("status", Text, nullable=False),
+    Column("canonical_ati_id", String(10), nullable=True),
+    Column("checked_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+)
+
 quota_balances = Table(
     "quota_balances",
     metadata,
@@ -1229,3 +1238,39 @@ async def rl_prune(before: datetime) -> int:
 
 async def rl_prune_before(ts: datetime) -> int:
     return await rl_prune(ts)
+
+
+async def get_ati_cache(ati_id: str) -> Optional[dict[str, Any]]:
+    async with Session() as session:
+        result = await session.execute(select(ati_code_cache).where(ati_code_cache.c.ati_id == ati_id))
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+
+async def upsert_ati_cache(
+    ati_id: str,
+    *,
+    status: str,
+    checked_at: datetime,
+    canonical_ati_id: Optional[str] = None,
+) -> None:
+    checked = _ensure_datetime_utc(checked_at)
+    stmt = (
+        pg_insert(ati_code_cache)
+        .values(
+            ati_id=ati_id,
+            status=status,
+            canonical_ati_id=canonical_ati_id,
+            checked_at=checked,
+        )
+        .on_conflict_do_update(
+            index_elements=[ati_code_cache.c.ati_id],
+            set_={
+                "status": status,
+                "canonical_ati_id": canonical_ati_id,
+                "checked_at": checked,
+            },
+        )
+    )
+    async with Session() as session, session.begin():
+        await session.execute(stmt)

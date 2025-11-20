@@ -89,7 +89,7 @@ def kb_profile() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="✏️ Мой код АТИ", callback_data="profile:code:edit"),
             ],
             [InlineKeyboardButton(text="🎁 Как получить запросы бесплатно?", callback_data="ref:freeinfo")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:menu")],
         ]
     )
 
@@ -205,7 +205,7 @@ def kb_after_report(has_balance: bool) -> InlineKeyboardMarkup:
                     InlineKeyboardButton(text="🧾 История", callback_data="hist:open"),
                     InlineKeyboardButton(text="ℹ️ О методике", callback_data="method:open"),
                 ],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+                [InlineKeyboardButton(text="⬅️ В меню", callback_data="nav:back")],
             ]
         )
     return kb_request_no_balance()

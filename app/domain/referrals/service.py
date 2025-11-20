@@ -345,7 +345,9 @@ async def list_recent_referrals(uid: int, *, limit: int = 10) -> list[ReferralEn
 def _validate_tag(tag: str) -> str:
     normalized = tag.strip().lower()
     if not _TAG_RE.fullmatch(normalized):
-        raise ValueError("tag must be 3-24 symbols: latin letters, digits or underscore")
+        raise ValueError(
+            "Не получилось создать ссылку.\nТег должен быть от 3 до 24 символов и состоять из латинских букв, цифр или «_»."
+        )
     return normalized
 
 
