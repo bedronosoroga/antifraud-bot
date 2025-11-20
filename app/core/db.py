@@ -198,6 +198,21 @@ ati_code_cache = Table(
     Column("checked_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
 )
 
+b2b_ati_leads = Table(
+    "b2b_ati_leads",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+    Column("uid", BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("username", Text, nullable=True),
+    Column("first_name", Text, nullable=True),
+    Column("last_name", Text, nullable=True),
+    Column("payload", Text, nullable=False),
+    Column("source", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default=text("'new'")),
+    Column("extra", JSONB, nullable=True),
+)
+
 quota_balances = Table(
     "quota_balances",
     metadata,
@@ -853,6 +868,34 @@ async def set_ref_custom_tag(uid: int, tag: str) -> dict[str, Any]:
         if row is None:
             raise ValueError("referral record not found")
         return dict(row)
+
+
+async def add_b2b_ati_lead(
+    uid: int,
+    *,
+    username: str | None,
+    first_name: str | None,
+    last_name: str | None,
+    payload: str,
+    source: str,
+    status: str = "new",
+    extra: Optional[dict[str, Any]] = None,
+) -> None:
+    text_payload = payload.strip()
+    if not text_payload:
+        raise ValueError("payload must be non-empty")
+    stmt = insert(b2b_ati_leads).values(
+        uid=uid,
+        username=username,
+        first_name=first_name,
+        last_name=last_name,
+        payload=text_payload,
+        source=source,
+        status=status,
+        extra=extra,
+    )
+    async with Session() as session, session.begin():
+        await session.execute(stmt)
 
 
 async def mark_invite_bonus_granted(uid: int) -> bool:

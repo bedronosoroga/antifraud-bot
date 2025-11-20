@@ -89,6 +89,7 @@ def kb_profile() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="✏️ Мой код АТИ", callback_data="profile:code:edit"),
             ],
             [InlineKeyboardButton(text="🎁 Как получить запросы бесплатно?", callback_data="ref:freeinfo")],
+            [InlineKeyboardButton(text="🧩 Антифрод в АТИ", callback_data="b2b:open")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:menu")],
         ]
     )
@@ -196,6 +197,34 @@ def kb_support() -> InlineKeyboardMarkup:
     )
 
 
+def kb_b2b_ati_main() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="✉️ Оставить заявку", callback_data="b2b:lead")],
+            [InlineKeyboardButton(text="💰 Подробнее о вознаграждении", callback_data="ref:open")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_b2b_ati_lead_back() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="b2b:open")],
+        ]
+    )
+
+
+def kb_b2b_ati_after_lead() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="💬 Написать в поддержку", url=SUPPORT_URL)],
+            [InlineKeyboardButton(text="💰 Подробнее о вознаграждении", callback_data="ref:open")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
+
+
 def kb_after_report(has_balance: bool) -> InlineKeyboardMarkup:
     if has_balance:
         return _kb(
@@ -260,6 +289,9 @@ __all__ = [
     "kb_payment_error",
     "kb_referral_main",
     "kb_support",
+    "kb_b2b_ati_main",
+    "kb_b2b_ati_lead_back",
+    "kb_b2b_ati_after_lead",
     "kb_after_report",
     "kb_method_page1",
     "kb_method_page2",

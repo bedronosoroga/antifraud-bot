@@ -107,8 +107,11 @@ def _build_ref_info(data: dict[str, object]) -> RefInfo:
     paid_refs = int(data.get("paid_refs_count", 0))
     balance_kop = int(data.get("balance_kop", 0))
     total_earned = int(data.get("total_earned_kop", 0))
-    tier = int(data.get("tier", 0))
-    percent = int(data.get("percent", 0))
+    stored_tier = int(data.get("tier", 0))
+    stored_percent = int(data.get("percent", 0))
+    computed_tier, computed_percent = calc_percent_by_paid(paid_refs)
+    tier = stored_tier if stored_tier > computed_tier else computed_tier
+    percent = stored_percent if stored_percent > computed_percent else computed_percent
     return RefInfo(
         code=str(data.get("code", "")),
         custom_tag=data.get("custom_tag"),

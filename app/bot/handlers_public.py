@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
+from html import escape
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -21,6 +22,7 @@ from app.domain.referrals import service as referral_service
 from app.domain.rates import service as rates_service
 from app.domain.onboarding.free import FreeService
 from app.domain.quotas.service import InsufficientQuotaError
+from app.domain.b2b import service as b2b_service
 from app.keyboards import (
     kb_free_info,
     kb_history,
@@ -41,6 +43,9 @@ from app.keyboards import (
     kb_referral_main,
     kb_single_back,
     kb_support,
+    kb_b2b_ati_main,
+    kb_b2b_ati_lead_back,
+    kb_b2b_ati_after_lead,
 )
 from app.bot.state import NAV_STACK_KEY, REPORT_HAS_BALANCE_KEY
 
@@ -66,9 +71,11 @@ INPUT_PROFILE_ATI = "profile:code:edit"
 INPUT_REF_TAG = "ref:tag:create"
 INPUT_WITHDRAW_AMOUNT = "ref:withdraw:amount"
 INPUT_WITHDRAW_DETAILS = "ref:withdraw:details"
+INPUT_B2B_ATI_LEAD = "b2b:ati:lead"
 
 PACKAGE_MAP = {f"pkg{pkg.qty}": pkg for pkg in REQUEST_PACKAGES}
 PACKAGE_BY_QTY = {pkg.qty: pkg for pkg in REQUEST_PACKAGES}
+B2B_LEAD_SOURCE = "profile_b2b_button"
 
 
 def _get_quota_service():
@@ -279,6 +286,15 @@ async def _show_report_actions(target: Message | CallbackQuery, state: FSMContex
     else:
         await _push_screen(state, "report")
     await _answer(target, texts.report_actions_text(), keyboard)
+
+
+async def _show_b2b_ati(target: Message | CallbackQuery, state: FSMContext, *, replace: bool = False) -> None:
+    await _set_input_mode(state, INPUT_NONE)
+    if replace:
+        await _replace_screen(state, "b2b")
+    else:
+        await _push_screen(state, "b2b")
+    await _answer(target, texts.b2b_ati_intro_text(), kb_b2b_ati_main())
 
 
 async def _show_payment_packages(target: Message | CallbackQuery, state: FSMContext, *, replace: bool = False) -> None:
@@ -516,6 +532,9 @@ async def _show_screen_by_id(
         return
     if screen == "profile":
         await _show_profile(target, state, replace=replace)
+        return
+    if screen == "b2b":
+        await _show_b2b_ati(target, state, replace=replace)
         return
     if screen == "buy":
         await _show_payment_packages(target, state, replace=replace)
@@ -772,6 +791,17 @@ async def show_referral(
     await _answer(target, text, kb_referral_main(link))
 
 
+@router.callback_query(F.data == "b2b:open")
+async def on_b2b_open(query: CallbackQuery, state: FSMContext) -> None:
+    await _show_b2b_ati(query, state, replace=False)
+
+
+@router.callback_query(F.data == "b2b:lead")
+async def on_b2b_lead(query: CallbackQuery, state: FSMContext) -> None:
+    await _set_input_mode(state, INPUT_B2B_ATI_LEAD)
+    await _answer(query, texts.b2b_ati_lead_prompt_text(), kb_b2b_ati_lead_back())
+
+
 @router.message(_InputModeActive())
 async def on_text_input(message: Message, state: FSMContext) -> None:
     mode = await _get_input_mode(state)
@@ -786,6 +816,9 @@ async def on_text_input(message: Message, state: FSMContext) -> None:
         return
     if mode == INPUT_WITHDRAW_DETAILS:
         await _handle_withdraw_details_input(message, state)
+        return
+    if mode == INPUT_B2B_ATI_LEAD:
+        await _handle_b2b_lead_input(message, state)
         return
 
 
@@ -946,6 +979,72 @@ async def _handle_withdraw_details_input(message: Message, state: FSMContext) ->
         reply_markup=kb_single_back("ref:open"),
     )
     await show_referral(message, state, replace=True)
+
+
+async def _handle_b2b_lead_input(message: Message, state: FSMContext) -> None:
+    uid = _user_id(message)
+    if uid is None:
+        return
+    payload = (message.text or "").strip()
+    if not payload:
+        await message.answer(
+            "Сообщение пустое. Напишите заявку одним сообщением.",
+            reply_markup=kb_b2b_ati_lead_back(),
+        )
+        return
+    from_user = message.from_user
+    username = from_user.username if from_user else None
+    first_name = from_user.first_name if from_user else None
+    last_name = from_user.last_name if from_user else None
+    try:
+        await b2b_service.add_ati_lead(
+            uid,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            payload=payload,
+            source=B2B_LEAD_SOURCE,
+        )
+    except Exception:
+        logging.exception("failed to save b2b lead for user %s", uid)
+        await message.answer(
+            "Не удалось отправить заявку. Попробуйте ещё раз позже.",
+            reply_markup=kb_b2b_ati_lead_back(),
+        )
+        return
+    await _set_input_mode(state, INPUT_NONE)
+    await message.answer(texts.b2b_ati_lead_ok_text(), reply_markup=kb_b2b_ati_after_lead())
+    await _notify_b2b_lead(message, payload, source=B2B_LEAD_SOURCE)
+
+
+async def _notify_b2b_lead(message: Message, payload: str, *, source: str) -> None:
+    chat_id = cfg.b2b_leads_chat_id
+    if not chat_id:
+        return
+    uid = _user_id(message)
+    if uid is None:
+        return
+    from_user = message.from_user
+    username = ""
+    full_name = ""
+    if from_user is not None:
+        if from_user.username:
+            username = f"@{from_user.username}"
+        full_name = f"{from_user.first_name or ''} {from_user.last_name or ''}".strip()
+    username_display = escape(username) if username else "—"
+    full_name_display = escape(full_name) if full_name else "—"
+    text = (
+        "🔔 <b>Новая заявка «Антифрод в АТИ»</b>\n\n"
+        f"User ID: <code>{uid}</code> ({username_display})\n"
+        f"Имя: {full_name_display}\n"
+        f"Источник: {escape(source)}\n\n"
+        "Текст:\n"
+        f"<pre>{escape(payload)}</pre>"
+    )
+    try:
+        await message.bot.send_message(chat_id, text)
+    except Exception:
+        logging.exception("failed to notify admin chat about b2b lead from user %s", uid)
 
 
 @router.callback_query(F.data == "buy:open")

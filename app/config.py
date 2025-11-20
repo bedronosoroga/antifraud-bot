@@ -205,6 +205,7 @@ class Cfg:
     ref_hold_days: int
     allow_wallet_purchases_only_in_referrals: bool
     ati: AtiConfig
+    b2b_leads_chat_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -310,6 +311,8 @@ def load_config() -> Cfg:
         cache_ttl_hours=env_int("ATI_CACHE_TTL_HOURS", 24) or 24,
     )
 
+    b2b_chat_id = env_int("B2B_ATI_LEADS_CHAT_ID")
+
     config = Cfg(
         bot_token=bot_token,
         admin_ids=env_set_int("ADMIN_IDS"),
@@ -323,6 +326,7 @@ def load_config() -> Cfg:
         ref_hold_days=ref_hold_days,
         allow_wallet_purchases_only_in_referrals=True,
         ati=ati_cfg,
+        b2b_leads_chat_id=b2b_chat_id,
     )
     return config
 
