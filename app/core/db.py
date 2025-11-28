@@ -198,6 +198,23 @@ ati_code_cache = Table(
     Column("checked_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
 )
 
+b2b_ati_leads = Table(
+    "b2b_ati_leads",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+    Column("uid", BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("phone", Text, nullable=False),
+    Column("first_name", Text, nullable=True),
+    Column("last_name", Text, nullable=True),
+    Column("username", Text, nullable=True),
+    Column("details", Text, nullable=True),
+    Column("details_received", Boolean, nullable=False, server_default=text("false")),
+    Column("status", Text, nullable=False, server_default=text("'new'")),
+    Column("source", Text, nullable=False, server_default=text("'b2b_profile_phone'")),
+)
+
 quota_balances = Table(
     "quota_balances",
     metadata,
@@ -853,6 +870,60 @@ async def set_ref_custom_tag(uid: int, tag: str) -> dict[str, Any]:
         if row is None:
             raise ValueError("referral record not found")
         return dict(row)
+
+
+async def create_b2b_ati_lead(
+    uid: int,
+    *,
+    phone: str,
+    first_name: str | None,
+    last_name: str | None,
+    username: str | None,
+    status: str = "new",
+    source: str = "b2b_profile_phone",
+    max_per_day: int = 5,
+) -> int:
+    cutoff = now_utc() - timedelta(days=1)
+    async with Session() as session, session.begin():
+        result = await session.execute(
+            select(func.count())
+            .select_from(b2b_ati_leads)
+            .where(b2b_ati_leads.c.uid == uid)
+            .where(b2b_ati_leads.c.created_at >= cutoff)
+        )
+        count = result.scalar_one() or 0
+        if count >= max_per_day:
+            raise ValueError("b2b_leads_rate_limited")
+        insert_stmt = (
+            insert(b2b_ati_leads)
+            .values(
+                uid=uid,
+                phone=phone.strip(),
+                first_name=first_name,
+                last_name=last_name,
+                username=username,
+                status=status,
+                source=source,
+            )
+            .returning(b2b_ati_leads.c.id)
+        )
+        lead_result = await session.execute(insert_stmt)
+        lead_id = lead_result.scalar_one()
+        return int(lead_id)
+
+
+async def add_b2b_ati_details(lead_id: int, details: str) -> None:
+    stmt = (
+        update(b2b_ati_leads)
+        .where(b2b_ati_leads.c.id == lead_id)
+        .values(
+            details=details.strip(),
+            details_received=True,
+            updated_at=now_utc(),
+        )
+    )
+    async with Session() as session, session.begin():
+        await session.execute(stmt)
 
 
 async def mark_invite_bonus_granted(uid: int) -> bool:

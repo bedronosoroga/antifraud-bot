@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import logging
+import asyncio
+from contextlib import suppress
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
+from html import escape
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -10,7 +13,7 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Filter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
 
 from app import texts
 from app.bot import runtime as bot_runtime
@@ -41,6 +44,8 @@ from app.keyboards import (
     kb_referral_main,
     kb_single_back,
     kb_support,
+    kb_b2b_ati_intro,
+    kb_b2b_ati_request_contact,
 )
 from app.bot.state import NAV_STACK_KEY, REPORT_HAS_BALANCE_KEY
 
@@ -60,15 +65,19 @@ HISTORY_MASK_KEY = "hist_mask"
 HISTORY_ORIGIN_KEY = "hist_origin"
 WITHDRAW_DATA_KEY = "withdraw_data"
 METHOD_PAGE_KEY = "method_page"
+B2B_ATI_LEAD_ID_KEY = "b2b_ati_lead_id"
+B2B_PREV_SCREEN_KEY = "b2b_prev_screen"
 
 INPUT_NONE = "none"
 INPUT_PROFILE_ATI = "profile:code:edit"
 INPUT_REF_TAG = "ref:tag:create"
 INPUT_WITHDRAW_AMOUNT = "ref:withdraw:amount"
 INPUT_WITHDRAW_DETAILS = "ref:withdraw:details"
+INPUT_B2B_ATI_DETAILS = "b2b_ati_details"
 
 PACKAGE_MAP = {f"pkg{pkg.qty}": pkg for pkg in REQUEST_PACKAGES}
 PACKAGE_BY_QTY = {pkg.qty: pkg for pkg in REQUEST_PACKAGES}
+B2B_CONTACT_FLAG = "b2b_ati_contact_mode"
 
 
 def _get_quota_service():
@@ -88,6 +97,12 @@ class _InputModeActive(Filter):
         mode = data.get(INPUT_MODE_KEY, INPUT_NONE)
         is_active = mode not in (None, INPUT_NONE)
         return is_active if self.active else not is_active
+
+
+class _B2BContactMode(Filter):
+    async def __call__(self, message: Message, state: FSMContext) -> bool:  # type: ignore[override]
+        data = await state.get_data()
+        return bool(data.get(B2B_CONTACT_FLAG))
 
 
 async def _answer(target: Message | CallbackQuery, text: str, keyboard: InlineKeyboardMarkup) -> None:
@@ -147,6 +162,19 @@ async def _set_input_mode(state: FSMContext, mode: str) -> None:
 async def _get_input_mode(state: FSMContext) -> str:
     data = await state.get_data()
     return data.get(INPUT_MODE_KEY, INPUT_NONE)
+
+
+async def _reset_b2b_state(state: FSMContext) -> None:
+    await state.update_data(
+        {
+            B2B_ATI_LEAD_ID_KEY: None,
+            B2B_CONTACT_FLAG: False,
+            B2B_PREV_SCREEN_KEY: None,
+            "b2b_last_phone": None,
+            "b2b_last_first_name": None,
+            "b2b_last_last_name": None,
+        }
+    )
 
 
 async def _current_screen(state: FSMContext) -> str:
@@ -281,6 +309,18 @@ async def _show_report_actions(target: Message | CallbackQuery, state: FSMContex
     await _answer(target, texts.report_actions_text(), keyboard)
 
 
+async def _show_b2b_ati(target: Message | CallbackQuery, state: FSMContext, *, replace: bool = False) -> None:
+    await _set_input_mode(state, INPUT_NONE)
+    await _reset_b2b_state(state)
+    prev = await _current_screen(state)
+    await state.update_data({B2B_PREV_SCREEN_KEY: prev})
+    if replace:
+        await _replace_screen(state, "b2b:ati")
+    else:
+        await _push_screen(state, "b2b:ati")
+    await _answer(target, texts.b2b_ati_intro_text(), kb_b2b_ati_intro())
+
+
 async def _show_payment_packages(target: Message | CallbackQuery, state: FSMContext, *, replace: bool = False) -> None:
     uid = _user_id(target)
     if uid is None:
@@ -358,7 +398,7 @@ async def _show_profile(target: Message | CallbackQuery, state: FSMContext, *, r
         has_history=history_total > 0,
     )
     if replace:
-        await _replace_screen(state, "profile")
+        await _push_screen(state, "profile")
     else:
         await _push_screen(state, "profile")
     await _answer(target, text, kb_profile())
@@ -479,17 +519,52 @@ async def on_menu(query: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "nav:back")
 async def on_nav_back(query: CallbackQuery, state: FSMContext) -> None:
+    mode = await _get_input_mode(state)
+    if mode == INPUT_B2B_ATI_DETAILS:
+        data = await state.get_data()
+        lead_id = data.get(B2B_ATI_LEAD_ID_KEY)
+        if lead_id is not None:
+            try:
+                await _notify_b2b_lead(
+                    query.message,
+                    lead_id=lead_id,
+                    phone=data.get("b2b_last_phone") or "",
+                    first_name=data.get("b2b_last_first_name"),
+                    last_name=data.get("b2b_last_last_name"),
+                    username=query.from_user.username if query.from_user else None,
+                    details=None,
+                )
+            except Exception:
+                logging.exception("failed to notify about b2b lead %s on back", lead_id)
+        await _set_input_mode(state, INPUT_NONE)
+        await _reset_b2b_state(state)
+    if mode == INPUT_PROFILE_ATI:
+        await _set_input_mode(state, INPUT_NONE)
+        await _reset_b2b_state(state)
+        await _show_profile(query, state, replace=True)
+        return
     current = await _current_screen(state)
     if current == "buy-pending":
         await _handle_payment_cancel(query, state)
         return
     if current == "buy-failure":
         await _set_input_mode(state, INPUT_NONE)
+        await _reset_b2b_state(state)
         restored = await _show_payment_methods_screen(query, state, replace=True)
         if not restored:
             await _show_payment_packages(query, state, replace=True)
         return
+    if current == "b2b:ati":
+        data = await state.get_data()
+        prev = data.get(B2B_PREV_SCREEN_KEY)
+        await _set_input_mode(state, INPUT_NONE)
+        await _reset_b2b_state(state)
+        if prev:
+            await _replace_screen(state, prev)
+            await _show_screen_by_id(query, state, prev, replace=True)
+            return
     await _set_input_mode(state, INPUT_NONE)
+    await _reset_b2b_state(state)
     screen = await _pop_screen(state)
     await _show_screen_by_id(query, state, screen, replace=True)
 
@@ -498,6 +573,7 @@ async def on_nav_back(query: CallbackQuery, state: FSMContext) -> None:
 async def on_nav_menu(query: CallbackQuery, state: FSMContext) -> None:
     await _reset_nav(state)
     await _set_input_mode(state, INPUT_NONE)
+    await _reset_b2b_state(state)
     await _show_menu(query, state, replace=True)
 
 
@@ -516,6 +592,9 @@ async def _show_screen_by_id(
         return
     if screen == "profile":
         await _show_profile(target, state, replace=replace)
+        return
+    if screen == "b2b:ati":
+        await _show_b2b_ati(target, state, replace=replace)
         return
     if screen == "buy":
         await _show_payment_packages(target, state, replace=replace)
@@ -772,7 +851,22 @@ async def show_referral(
     await _answer(target, text, kb_referral_main(link))
 
 
-@router.message(_InputModeActive())
+@router.callback_query(F.data == "b2b:ati:open")
+async def on_b2b_ati_open(query: CallbackQuery, state: FSMContext) -> None:
+    await _show_b2b_ati(query, state, replace=False)
+
+
+@router.callback_query(F.data == "b2b:ati:send_phone")
+async def on_b2b_ati_send_phone(query: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data({B2B_CONTACT_FLAG: True})
+    await _set_input_mode(state, INPUT_NONE)
+    await query.message.answer(
+        "Нажмите «Отправить номер» или просто отправьте номер телефона нужного человека в ответном сообщении.",
+        reply_markup=kb_b2b_ati_request_contact(),
+    )
+
+
+@router.message(_InputModeActive(), F.text)
 async def on_text_input(message: Message, state: FSMContext) -> None:
     mode = await _get_input_mode(state)
     if mode == INPUT_PROFILE_ATI:
@@ -787,6 +881,9 @@ async def on_text_input(message: Message, state: FSMContext) -> None:
     if mode == INPUT_WITHDRAW_DETAILS:
         await _handle_withdraw_details_input(message, state)
         return
+    if mode == INPUT_B2B_ATI_DETAILS:
+        await _handle_b2b_details_input(message, state)
+        return
 
 
 @router.message(CommandStart())
@@ -797,6 +894,7 @@ async def _noop_start_forward(_: Message, state: FSMContext) -> None:
 
 @router.message(
     _InputModeActive(active=False),
+    ~_B2BContactMode(),
     F.text,
     ~F.text.startswith("/"),
     ~F.text.regexp(r"^\d{1,7}$"),
@@ -946,6 +1044,168 @@ async def _handle_withdraw_details_input(message: Message, state: FSMContext) ->
         reply_markup=kb_single_back("ref:open"),
     )
     await show_referral(message, state, replace=True)
+
+
+@router.message(F.contact)
+async def _handle_b2b_contact(message: Message, state: FSMContext) -> None:
+    mode = await _get_input_mode(state)
+    if mode == INPUT_B2B_ATI_DETAILS:
+        await message.answer(
+            "Номер уже получили. Если хотите, допишите детали о компании одним текстовым сообщением или нажмите «Назад».",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+    data = await state.get_data()
+    flag = data.get(B2B_CONTACT_FLAG)
+    current = await _current_screen(state)
+    if not flag and current != "b2b:ati":
+        return
+    await _process_b2b_lead(
+        message,
+        state,
+        phone=message.contact.phone_number,
+        first_name=message.contact.first_name,
+        last_name=message.contact.last_name,
+    )
+
+
+@router.message(_B2BContactMode(), _InputModeActive(active=False), F.text)
+async def _handle_b2b_contact_text(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        return
+    if text == "⬅️ Отмена":
+        await state.update_data({B2B_CONTACT_FLAG: False})
+        await _set_input_mode(state, INPUT_NONE)
+        try:
+            sent = await message.answer("\u200b", reply_markup=ReplyKeyboardRemove())
+            with suppress(Exception):
+                await message.bot.delete_message(sent.chat.id, sent.message_id)
+        except TelegramBadRequest:
+            pass
+        await message.answer(
+            "Отменили запрос. Если потребуется, можно отправить номер ещё раз.",
+            reply_markup=kb_single_back("nav:back"),
+        )
+        return
+    await _process_b2b_lead(message, state, phone=text, first_name=message.from_user.first_name if message.from_user else None, last_name=message.from_user.last_name if message.from_user else None)
+
+
+async def _process_b2b_lead(message: Message, state: FSMContext, *, phone: str, first_name: str | None, last_name: str | None) -> None:
+    uid = _user_id(message)
+    if uid is None:
+        return
+    username = message.from_user.username if message.from_user else None
+    try:
+        lead_id = await dal.create_b2b_ati_lead(
+            uid=uid,
+            phone=phone,
+            first_name=first_name,
+            last_name=last_name,
+            username=username,
+        )
+    except ValueError as exc:
+        if str(exc) == "b2b_leads_rate_limited":
+            await message.answer("Слишком много заявок за сегодня. Попробуйте позже.", reply_markup=ReplyKeyboardRemove())
+            await state.update_data({B2B_CONTACT_FLAG: False})
+            return
+        logging.exception("failed to create b2b lead for user %s", uid)
+        await message.answer("Не удалось сохранить заявку. Попробуйте позже.", reply_markup=ReplyKeyboardRemove())
+        await state.update_data({B2B_CONTACT_FLAG: False})
+        return
+    await state.update_data(
+        {
+            B2B_CONTACT_FLAG: False,
+            B2B_ATI_LEAD_ID_KEY: lead_id,
+            "b2b_last_phone": phone,
+            "b2b_last_first_name": first_name,
+            "b2b_last_last_name": last_name,
+        }
+    )
+    await _set_input_mode(state, INPUT_B2B_ATI_DETAILS)
+    try:
+        temp = await message.answer(
+            "📨 Отправляем заявку…",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await asyncio.sleep(0.3)
+        with suppress(Exception):
+            await message.bot.delete_message(temp.chat.id, temp.message_id)
+    except TelegramBadRequest:
+        pass
+    await message.answer(texts.b2b_ati_contact_received_text(), reply_markup=kb_single_back("nav:back"))
+
+
+async def _handle_b2b_details_input(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    lead_id = data.get(B2B_ATI_LEAD_ID_KEY)
+    text = (message.text or "").strip()
+    if lead_id is not None:
+        details_to_save = text if text else None
+        if details_to_save:
+            try:
+                await dal.add_b2b_ati_details(lead_id, details_to_save)
+            except Exception:
+                logging.exception("failed to save b2b details for lead %s", lead_id)
+        if details_to_save:
+            try:
+                await _notify_b2b_lead(
+                    message,
+                    lead_id=lead_id,
+                    phone=data.get("b2b_last_phone") or "",
+                    first_name=data.get("b2b_last_first_name"),
+                    last_name=data.get("b2b_last_last_name"),
+                    username=message.from_user.username if message.from_user else None,
+                    details=details_to_save,
+                )
+            except Exception:
+                logging.exception("failed to notify about b2b lead %s after details", lead_id)
+    await _set_input_mode(state, INPUT_NONE)
+    await state.update_data(
+        {
+            B2B_ATI_LEAD_ID_KEY: None,
+            B2B_CONTACT_FLAG: False,
+            "b2b_last_phone": None,
+            "b2b_last_first_name": None,
+            "b2b_last_last_name": None,
+        }
+    )
+    await message.answer(texts.b2b_ati_details_saved_text(), reply_markup=ReplyKeyboardRemove())
+    await _show_profile(message, state, replace=False)
+
+
+async def _notify_b2b_lead(
+    message: Message,
+    *,
+    lead_id: int,
+    phone: str,
+    first_name: str | None,
+    last_name: str | None,
+    username: str | None,
+    details: str | None = None,
+) -> None:
+    chat_id = getattr(cfg, "b2b_leads_chat_id", None)
+    if not chat_id:
+        return
+    uid = _user_id(message)
+    if uid is None:
+        return
+    username_display = f"@{username}" if username else "—"
+    full_name = f"{first_name or ''} {last_name or ''}".strip() or "—"
+    text = (
+        "🔔 <b>Новая заявка «Антифрод в АТИ»</b>\n\n"
+        f"Lead ID: <code>{lead_id}</code>\n"
+        f"User ID: <code>{uid}</code>\n"
+        f"Имя: {escape(full_name)}\n"
+        f"Username: {escape(username_display)}\n"
+        f"Телефон: <code>{escape(phone)}</code>\n"
+        "Источник: b2b_profile_phone\n"
+        f"Детали: {escape(details) if details else '—'}\n"
+    )
+    try:
+        await message.bot.send_message(chat_id, text)
+    except Exception:
+        logging.exception("failed to notify admin chat about b2b lead %s", lead_id)
 
 
 @router.callback_query(F.data == "buy:open")

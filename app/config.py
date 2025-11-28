@@ -28,6 +28,7 @@ __all__ = [
     "PAYMENTS_ACTIVE_PROVIDER",
     "PAYMENTS_SANDBOX_NOTE",
     "ADMINS",
+    "B2B_ATI_LEADS_CHAT_ID",
     "load_config",
     "cfg",
 ]
@@ -195,6 +196,7 @@ class Cfg:
 
     bot_token: str
     admin_ids: set[int]
+    b2b_leads_chat_id: int | None
     tz: str
     paths: AppPaths
     plans: dict[str, SubscriptionPlan]
@@ -242,6 +244,8 @@ def load_config() -> Cfg:
     bot_token = env_str("BOT_TOKEN")
     if not bot_token:
         raise RuntimeError("Environment variable BOT_TOKEN is required and must be non-empty")
+
+    b2b_leads_chat_id = env_int("B2B_ATI_LEADS_CHAT_ID", None)
 
     plan_p20_price = env_int("PLAN_P20_PRICE", 299)
     plan_p50_price = env_int("PLAN_P50_PRICE", 469)
@@ -323,6 +327,7 @@ def load_config() -> Cfg:
         ref_hold_days=ref_hold_days,
         allow_wallet_purchases_only_in_referrals=True,
         ati=ati_cfg,
+        b2b_leads_chat_id=b2b_leads_chat_id,
     )
     return config
 
@@ -361,6 +366,7 @@ REF_WITHDRAW_MIN_KOP: int = 1_000_00
 REF_WITHDRAW_MIN_USD: int = 10
 REF_WITHDRAW_FEE_PERCENT: int = 8
 COINMARKETCAP_API_KEY: str | None = env_str("COINMARKETCAP_API_KEY")
+B2B_ATI_LEADS_CHAT_ID: int | None = cfg.b2b_leads_chat_id
 
 REQUEST_PACKAGES: list[RequestPackage] = [
     RequestPackage(qty=5, price_rub=99, unit_price_rub=19.8, discount_hint="~20 ₽/шт"),

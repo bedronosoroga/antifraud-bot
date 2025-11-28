@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable, List
 
-from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 
 from app.config import REQUEST_PACKAGES, RequestPackage
 
@@ -88,6 +88,7 @@ def kb_profile() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="ℹ️ О методике", callback_data="method:open"),
                 InlineKeyboardButton(text="✏️ Мой код АТИ", callback_data="profile:code:edit"),
             ],
+            [InlineKeyboardButton(text="🧩 Антифрод в АТИ для компаний", callback_data="b2b:ati:open")],
             [InlineKeyboardButton(text="🎁 Как получить запросы бесплатно?", callback_data="ref:freeinfo")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:menu")],
         ]
@@ -196,6 +197,26 @@ def kb_support() -> InlineKeyboardMarkup:
     )
 
 
+def kb_b2b_ati_intro() -> InlineKeyboardMarkup:
+    return _kb(
+        [
+            [InlineKeyboardButton(text="📱 Отправить номер", callback_data="b2b:ati:send_phone")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
+        ]
+    )
+
+
+def kb_b2b_ati_request_contact() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📱 Отправить номер", request_contact=True)],
+            [KeyboardButton(text="⬅️ Отмена")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
 def kb_after_report(has_balance: bool) -> InlineKeyboardMarkup:
     if has_balance:
         return _kb(
@@ -260,6 +281,8 @@ __all__ = [
     "kb_payment_error",
     "kb_referral_main",
     "kb_support",
+    "kb_b2b_ati_intro",
+    "kb_b2b_ati_request_contact",
     "kb_after_report",
     "kb_method_page1",
     "kb_method_page2",
