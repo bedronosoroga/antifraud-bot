@@ -28,6 +28,7 @@ __all__ = [
     "PAYMENTS_ACTIVE_PROVIDER",
     "PAYMENTS_SANDBOX_NOTE",
     "ADMINS",
+    "YooKassaConfig",
     "B2B_ATI_LEADS_CHAT_ID",
     "load_config",
     "cfg",
@@ -191,6 +192,15 @@ class AtiConfig:
 
 
 @dataclass(frozen=True)
+class YooKassaConfig:
+    shop_id: str
+    secret_key: str
+    return_url: str
+    api_base_url: str = "https://api.yookassa.ru/v3"
+    is_sandbox: bool = False
+
+
+@dataclass(frozen=True)
 class Cfg:
     """Application configuration container."""
 
@@ -207,6 +217,7 @@ class Cfg:
     ref_hold_days: int
     allow_wallet_purchases_only_in_referrals: bool
     ati: AtiConfig
+    yookassa: YooKassaConfig | None
 
 
 @dataclass(frozen=True)
@@ -314,6 +325,18 @@ def load_config() -> Cfg:
         cache_ttl_hours=env_int("ATI_CACHE_TTL_HOURS", 24) or 24,
     )
 
+    yks_shop_id = env_str("YKS_SHOP_ID")
+    yks_secret = env_str("YKS_SECRET_KEY")
+    yookassa_cfg: YooKassaConfig | None = None
+    if yks_shop_id and yks_secret:
+        yookassa_cfg = YooKassaConfig(
+            shop_id=yks_shop_id,
+            secret_key=yks_secret,
+            return_url=env_str("YKS_RETURN_URL", "https://t.me/giftixxbot") or "https://t.me/giftixxbot",
+            api_base_url=env_str("YKS_API_BASE_URL", "https://api.yookassa.ru/v3") or "https://api.yookassa.ru/v3",
+            is_sandbox=env_bool("YKS_IS_SANDBOX", False),
+        )
+
     config = Cfg(
         bot_token=bot_token,
         admin_ids=env_set_int("ADMIN_IDS"),
@@ -328,6 +351,7 @@ def load_config() -> Cfg:
         allow_wallet_purchases_only_in_referrals=True,
         ati=ati_cfg,
         b2b_leads_chat_id=b2b_leads_chat_id,
+        yookassa=yookassa_cfg,
     )
     return config
 

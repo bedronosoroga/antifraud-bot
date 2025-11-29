@@ -142,13 +142,13 @@ def kb_payment_methods() -> InlineKeyboardMarkup:
     )
 
 
-def kb_payment_pending(payment_id: str) -> InlineKeyboardMarkup:
-    return _kb(
-        [
-            [InlineKeyboardButton(text="Проверить оплату", callback_data=f"buy:check:{payment_id}")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")],
-        ]
-    )
+def kb_payment_pending(payment_id: str, confirmation_url: str | None = None, price_rub: int | None = None) -> InlineKeyboardMarkup:
+    rows = []
+    if confirmation_url:
+        label_price = f" {price_rub} ₽" if price_rub else ""
+        rows.append([InlineKeyboardButton(text=f"🧾 Оплатить{label_price}", url=confirmation_url)])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav:back")])
+    return _kb(rows)
 
 
 def kb_payment_success() -> InlineKeyboardMarkup:

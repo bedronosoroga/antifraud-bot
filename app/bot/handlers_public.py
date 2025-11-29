@@ -20,6 +20,7 @@ from app.bot import runtime as bot_runtime
 from app.config import REQUEST_PACKAGES, RequestPackage, REF_WITHDRAW_MIN_USD, cfg
 from app.core import db as dal
 from app.domain.payments import sandbox as sandbox_pay
+from app.domain.payments.yookassa_service import YooKassaService
 from app.domain.referrals import service as referral_service
 from app.domain.rates import service as rates_service
 from app.domain.onboarding.free import FreeService
@@ -78,6 +79,7 @@ INPUT_B2B_ATI_DETAILS = "b2b_ati_details"
 PACKAGE_MAP = {f"pkg{pkg.qty}": pkg for pkg in REQUEST_PACKAGES}
 PACKAGE_BY_QTY = {pkg.qty: pkg for pkg in REQUEST_PACKAGES}
 B2B_CONTACT_FLAG = "b2b_ati_contact_mode"
+_yk_service: YooKassaService | None = None
 
 
 def _get_quota_service():
@@ -164,6 +166,15 @@ async def _get_input_mode(state: FSMContext) -> str:
     return data.get(INPUT_MODE_KEY, INPUT_NONE)
 
 
+def _get_yk_service() -> YooKassaService | None:
+    global _yk_service
+    if cfg.yookassa is None:
+        return None
+    if _yk_service is None:
+        _yk_service = YooKassaService(cfg.yookassa)
+    return _yk_service
+
+
 async def _reset_b2b_state(state: FSMContext) -> None:
     await state.update_data(
         {
@@ -211,6 +222,40 @@ def _get_package_by_qty(qty: int) -> RequestPackage:
 
 def _package_code_from_qty(qty: int) -> str:
     return f"pkg{qty}"
+
+
+async def _grant_yk_payment_if_needed(payment: dict[str, Any]) -> tuple[int, int]:
+    """Return (granted_requests, new_balance)."""
+    if payment.get("status") != "succeeded" or payment.get("granted_requests", 0) > 0:
+        quota = _get_quota_service()
+        balance = (await quota.get_state(payment["uid"])).balance
+        return 0, balance
+    qty = int(payment.get("package_qty") or 0)
+    if qty <= 0:
+        return 0, (await _get_quota_service().get_state(payment["uid"])).balance
+    quota = _get_quota_service()
+    await quota.add(
+        payment["uid"],
+        qty,
+        source="yookassa",
+        metadata={"payment_id": payment["id"], "yk_payment_id": payment.get("yk_payment_id")},
+    )
+    await dal.yk_mark_granted(payment["id"], qty)
+    balance = (await quota.get_state(payment["uid"])).balance
+    return qty, balance
+
+
+async def _refresh_yk_status(payment: dict[str, Any]) -> dict[str, Any]:
+    service = _get_yk_service()
+    if service is None:
+        raise RuntimeError("YooKassa config is missing")
+    remote_id = payment.get("yk_payment_id")
+    if not remote_id:
+        raise RuntimeError("YooKassa payment id is missing")
+    result = await service.fetch_status(remote_id)
+    await dal.yk_update_status(payment["id"], status=result.status, raw_metadata=result.metadata)
+    updated = await dal.yk_get_payment(payment["id"])
+    return updated or {**payment, "status": result.status, "raw_metadata": result.metadata}
 
 
 async def _get_bot_username(target: Message | CallbackQuery, state: FSMContext) -> str:
@@ -358,24 +403,35 @@ async def _show_payment_methods_screen(
     return True
 
 
-async def _show_payment_pending(target: Message | CallbackQuery, state: FSMContext, payment_id: str) -> None:
+async def _show_payment_pending(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    payment_id: str,
+    confirmation_url: str | None = None,
+) -> Optional[Message]:
     await state.update_data({"buy_payment_id": payment_id})
     await _replace_screen(state, "buy-pending")
-    await _answer(target, texts.payment_pending_text(), kb_payment_pending(payment_id))
+    # try to fetch price from state if present
+    data = await state.get_data()
+    price_rub = data.get("buy_package_price")
+    keyboard = kb_payment_pending(str(payment_id), confirmation_url, price_rub)
+    if isinstance(target, CallbackQuery):
+        sent = await target.message.answer(texts.payment_pending_text(), reply_markup=keyboard)
+        return sent
+    sent = await target.answer(texts.payment_pending_text(), reply_markup=keyboard)
+    return sent
 
 
 async def _handle_payment_cancel(query: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     payment_id = data.get("buy_payment_id")
-    if payment_id:
-        try:
+    if payment_id and isinstance(payment_id, str):
+        with suppress(Exception):
             await sandbox_pay.simulate_failure(payment_id, reason="cancel")
-        except Exception:
-            logging.exception("failed to mark payment %s as cancelled", payment_id)
     await state.update_data({"buy_payment_id": None})
     await _replace_screen(state, "buy-failure")
     text = texts.payment_error_text("cancel")
-    await _answer(query, text, kb_payment_error(payment_id or "0"))
+    await _answer(query, text, kb_payment_error(str(payment_id or "0")))
 
 
 async def _show_profile(target: Message | CallbackQuery, state: FSMContext, *, replace: bool = False) -> None:
@@ -553,6 +609,12 @@ async def on_nav_back(query: CallbackQuery, state: FSMContext) -> None:
         restored = await _show_payment_methods_screen(query, state, replace=True)
         if not restored:
             await _show_payment_packages(query, state, replace=True)
+        return
+    if current == "buy-success":
+        await _reset_nav(state)
+        await _set_input_mode(state, INPUT_NONE)
+        await _reset_b2b_state(state)
+        await _show_menu(query, state, replace=True)
         return
     if current == "b2b:ati":
         data = await state.get_data()
@@ -1276,21 +1338,74 @@ async def on_buy_method(query: CallbackQuery, state: FSMContext) -> None:
     if uid is None:
         return
     method = query.data.split(":")[-1]
-    try:
-        payment = await sandbox_pay.start_demo_checkout(uid, code)
-    except Exception:
-        logging.exception("failed to start demo checkout")
-        await query.answer("Не удалось создать заказ", show_alert=True)
-        return
-
     if method == "stars":
-        await sandbox_pay.simulate_failure(payment["payment_id"], reason="stars")
+        payment_id = "0"
+        try:
+            payment = await sandbox_pay.start_demo_checkout(uid, code)
+            payment_id = payment["payment_id"]
+            await sandbox_pay.simulate_failure(payment["payment_id"], reason="stars")
+        except Exception:
+            logging.exception("failed to handle stars payment")
         await state.update_data({"buy_payment_id": None})
         await _replace_screen(state, "buy-failure")
-        await _answer(query, texts.payment_error_text("stars"), kb_payment_error(payment["payment_id"]))
+        await _answer(query, texts.payment_error_text("stars"), kb_payment_error(payment_id))
         return
 
-    await _show_payment_pending(query, state, payment["payment_id"])
+    if method == "card":
+        if cfg.yookassa is None:
+            await query.answer("Оплата картой временно недоступна", show_alert=True)
+            return
+        pkg = _get_package(code)
+        service = _get_yk_service()
+        if service is None:
+            await query.answer("Оплата картой временно недоступна", show_alert=True)
+            return
+        # Limit pending payments per user and reuse existing pending for same qty
+        pending_count = await dal.yk_count_pending_for_user(uid)
+        existing = await dal.yk_get_pending_for_user_and_qty(uid, pkg.qty)
+        if existing and existing.get("confirmation_url"):
+            await _show_payment_pending(query, state, str(existing["id"]), existing.get("confirmation_url"))
+            return
+        if pending_count >= 2:
+            await query.answer("Сначала завершите предыдущие оплаты", show_alert=True)
+            return
+        bot_username = await _get_bot_username(query, state)
+        return_url = f"https://t.me/{bot_username}"
+        try:
+            payment = await dal.yk_create_payment(
+                uid,
+                package_qty=pkg.qty,
+                package_price_rub=pkg.price_rub,
+                provider="yookassa",
+            )
+            created = await service.create_payment(
+                internal_payment_id=payment["id"],
+                user_id=uid,
+                qty=pkg.qty,
+                price_rub=pkg.price_rub,
+                return_url=return_url,
+            )
+            await dal.yk_set_remote_payment(
+                payment["id"],
+                yk_payment_id=created.payment_id,
+                confirmation_url=created.confirmation_url,
+            )
+            sent = await _show_payment_pending(query, state, str(payment["id"]), created.confirmation_url)
+            if sent:
+                meta = payment.get("raw_metadata") or {}
+                meta.update({"chat_id": sent.chat.id, "message_id": sent.message_id})
+                with suppress(Exception):
+                    await dal.yk_update_status(payment["id"], status="pending", raw_metadata=meta)
+            return
+        except Exception:
+            logging.exception("failed to create yookassa payment")
+            with suppress(Exception):
+                await dal.yk_update_status(payment["id"], status="failed")
+            await _replace_screen(state, "buy-failure")
+            await _answer(query, texts.payment_error_text("error"), kb_payment_error("0"))
+            return
+
+    await query.answer("Способ оплаты недоступен", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("buy:check:"))
@@ -1298,27 +1413,70 @@ async def on_buy_check(query: CallbackQuery, state: FSMContext) -> None:
     uid = _user_id(query)
     if uid is None:
         return
-    payment_id = query.data.split(":")[-1]
-    result = await sandbox_pay.simulate_success(payment_id)
-    if not result["ok"]:
-        reason = result.get("reason") or "error"
-        key = "timeout" if reason == "not-found" else "error"
+    payment_id_raw = query.data.split(":")[-1]
+    yk_payment: Optional[dict[str, Any]] = None
+    try:
+        payment_int = int(payment_id_raw)
+    except ValueError:
+        payment_int = None
+    if payment_int is not None:
+        yk_payment = await dal.yk_get_payment(payment_int)
+    if yk_payment is None:
+        # fallback to sandbox legacy
+        result = await sandbox_pay.simulate_success(payment_id_raw)
+        if not result["ok"]:
+            reason = result.get("reason") or "error"
+            key = "timeout" if reason == "not-found" else "error"
+            await state.update_data({"buy_payment_id": None})
+            await _replace_screen(state, "buy-failure")
+            await _answer(query, texts.payment_error_text(key), kb_payment_error(payment_id_raw))
+            return
+        if result["status_was"] == "confirmed" and result.get("granted_requests", 0) == 0:
+            await state.update_data({"buy_payment_id": None})
+            await _replace_screen(state, "buy-failure")
+            await _answer(query, texts.payment_error_text("duplicate"), kb_payment_error(payment_id_raw))
+            return
+        quota = await _get_quota_service().get_state(uid)
+        text = texts.payment_success_text(result.get("granted_requests", 0), quota.balance)
+        if result.get("need_company_ati_capture"):
+            text += "\n\n" + texts.company_ati_ask()
+        await state.update_data({"buy_payment_id": None})
+        await _replace_screen(state, "buy-success")
+        await _answer(query, text, kb_payment_success())
+        return
+
+    payment = yk_payment
+    if payment["uid"] != uid:
+        await query.answer("Платёж не найден", show_alert=True)
+        return
+    if payment.get("status") == "succeeded" and payment.get("granted_requests", 0) > 0:
+        granted = int(payment.get("granted_requests", 0))
+        quota = await _get_quota_service().get_state(uid)
+        text = texts.payment_success_text(granted, quota.balance)
+        await _replace_screen(state, "buy-success")
+        await _answer(query, text, kb_payment_success())
+        return
+    try:
+        refreshed = await _refresh_yk_status(payment)
+    except Exception:
+        logging.exception("failed to refresh yookassa status for %s", payment_id_raw)
+        await query.answer("Пока нет подтверждения оплаты", show_alert=True)
+        return
+
+    status = refreshed.get("status")
+    if status == "succeeded":
+        granted, balance = await _grant_yk_payment_if_needed(refreshed)
+        text = texts.payment_success_text(granted or refreshed.get("granted_requests", 0), balance)
+        await state.update_data({"buy_payment_id": None})
+        await _replace_screen(state, "buy-success")
+        await _answer(query, text, kb_payment_success())
+        return
+    if status in {"canceled", "expired", "refunded"}:
         await state.update_data({"buy_payment_id": None})
         await _replace_screen(state, "buy-failure")
-        await _answer(query, texts.payment_error_text(key), kb_payment_error(payment_id))
+        await _answer(query, texts.payment_error_text("cancel"), kb_payment_error(payment_id_raw))
         return
-    if result["status_was"] == "confirmed" and result.get("granted_requests", 0) == 0:
-        await state.update_data({"buy_payment_id": None})
-        await _replace_screen(state, "buy-failure")
-        await _answer(query, texts.payment_error_text("duplicate"), kb_payment_error(payment_id))
-        return
-    quota = await _get_quota_service().get_state(uid)
-    text = texts.payment_success_text(result.get("granted_requests", 0), quota.balance)
-    if result.get("need_company_ati_capture"):
-        text += "\n\n" + texts.company_ati_ask()
-    await state.update_data({"buy_payment_id": None})
-    await _replace_screen(state, "buy-success")
-    await _answer(query, text, kb_payment_success())
+    await query.answer("Оплата пока не подтверждена, попробуйте позже", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("buy:retry:"))

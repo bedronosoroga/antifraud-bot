@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,6 +19,9 @@ from app.domain.checks.service import CheckerService
 from app.domain.catalog_cache.service import AtiCodeCache
 from app.bot.handlers_numeric import init_checks_runtime
 from app.bot import runtime as bot_runtime
+from app.domain.payments.yookassa_service import YooKassaService
+from app.keyboards import kb_payment_success
+from app.keyboards import kb_payment_error
 
 logger = logging.getLogger(__name__)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
@@ -32,6 +36,9 @@ _catalog_heartbeat = {
     "failures": 0,
     "last_log_ts": datetime.now(timezone.utc).timestamp(),
 }
+_yk_heartbeat = {"runs": 0, "updated": 0, "failures": 0, "last_log_ts": datetime.now(timezone.utc).timestamp(), "429": 0, "pending": 0}
+_scheduler_bot: Bot | None = None
+YK_POLL_INTERVAL = 10
 
 
 def _maybe_log_catalog_heartbeat(now_ts: float) -> None:
@@ -51,7 +58,8 @@ def _maybe_log_catalog_heartbeat(now_ts: float) -> None:
     _catalog_heartbeat["last_log_ts"] = now_ts
 
 def build_scheduler(bot: Bot) -> AsyncIOScheduler:
-    del bot  # legacy signature; scheduler currently does not use bot
+    global _scheduler_bot
+    _scheduler_bot = bot
     scheduler = AsyncIOScheduler(timezone=timezone.utc)
     _register_jobs(scheduler)
     return scheduler
@@ -66,6 +74,85 @@ async def job_prune_rl() -> None:
     removed = await dal.rl_prune_before(cutoff)
     if removed:
         logger.info("rate limit prune removed %s records", removed)
+
+
+async def job_poll_yk_payments(bot: Bot | None = None) -> None:
+    if cfg.yookassa is None:
+        return
+    _yk_heartbeat["runs"] += 1
+    service = YooKassaService(cfg.yookassa)
+    try:
+        pending = await dal.yk_list_pending()
+    except Exception:
+        _yk_heartbeat["failures"] += 1
+        logger.exception("failed to fetch pending yk payments")
+        return
+    if not pending:
+        return
+    _yk_heartbeat["pending"] = len(pending)
+    quota = bot_runtime.get_quota_service()
+    for payment in pending:
+        # drop stale confirmation links older than 60 minutes and notify
+        created_at = payment.get("created_at")
+        meta = payment.get("raw_metadata") or {}
+        if created_at:
+            age = datetime.now(timezone.utc) - created_at
+            if age.total_seconds() > 3600:
+                if payment.get("confirmation_url"):
+                    with suppress(Exception):
+                        await dal.yk_clear_confirmation_url(payment["id"])
+                if payment.get("status") not in {"succeeded", "canceled", "expired"}:
+                    await dal.yk_update_status(payment["id"], status="expired")
+                    if bot is not None:
+                        if meta.get("chat_id") and meta.get("message_id"):
+                            with suppress(Exception):
+                                await bot.delete_message(meta["chat_id"], meta["message_id"])
+                        with suppress(Exception):
+                            await bot.send_message(
+                                payment["uid"],
+                                "⏳ Ссылка на оплату устарела. Начните оплату заново.",
+                                reply_markup=kb_payment_error(str(payment["id"])),
+                            )
+                    continue
+        try:
+            res = await service.fetch_status(payment["yk_payment_id"])
+            status = res.status
+            await dal.yk_update_status(payment["id"], status=status, raw_metadata=res.metadata)
+            if status == "succeeded" and payment.get("granted_requests", 0) == 0:
+                await quota.add(
+                    payment["uid"],
+                    payment["package_qty"],
+                    source="yookassa",
+                    metadata={"payment_id": payment["id"], "yk_payment_id": payment.get("yk_payment_id")},
+                )
+                await dal.yk_mark_granted(payment["id"], payment["package_qty"])
+                _yk_heartbeat["updated"] += 1
+                if bot is not None and not payment.get("notified"):
+                    balance = (await quota.get_state(payment["uid"])).balance
+                    text = (
+                        f"<b>✅ Оплата прошла</b>\n\n"
+                        f"Начислено <b>+{payment['package_qty']}</b> запросов.\n"
+                        f"<b>Доступно запросов</b>: {balance}"
+                    )
+                    meta = payment.get("raw_metadata") or {}
+                    if meta.get("chat_id") and meta.get("message_id"):
+                        with suppress(Exception):
+                            await bot.delete_message(meta["chat_id"], meta["message_id"])
+                    with suppress(Exception):
+                        await bot.send_message(payment["uid"], text, reply_markup=kb_payment_success())
+                    with suppress(Exception):
+                        await dal.yk_update_status(payment["id"], status="succeeded", notified=True)
+            elif status in {"canceled", "expired", "refunded"}:
+                await dal.yk_update_status(payment["id"], status=status, raw_metadata=res.metadata)
+        except Exception as exc:
+            _yk_heartbeat["failures"] += 1
+            msg = str(exc)
+            if "429" in msg:
+                _yk_heartbeat["429"] += 1
+                logger.warning("YooKassa rate limit hit, stopping poll run early")
+                break
+            logger.exception("failed to poll yk payment %s", payment.get("id"))
+        await asyncio.sleep(0.2)
 
 
 async def job_daily_digest(bot: Bot) -> None:
@@ -144,6 +231,13 @@ def _register_jobs(scheduler: AsyncIOScheduler) -> None:
         id="catalog_reload",
         replace_existing=True,
     )
+    scheduler.add_job(
+        job_poll_yk_payments,
+        IntervalTrigger(seconds=YK_POLL_INTERVAL),
+        args=[_scheduler_bot],
+        id="yk_poll",
+        replace_existing=True,
+    )
     # Optional daily digest (disabled by default)
     # scheduler.add_job(
     #     job_daily_digest,
@@ -160,4 +254,5 @@ __all__ = [
     "job_prune_rl",
     "job_catalog_reload_if_needed",
     "job_daily_digest",
+    "job_poll_yk_payments",
 ]

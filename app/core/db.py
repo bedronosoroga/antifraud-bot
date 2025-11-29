@@ -215,6 +215,28 @@ b2b_ati_leads = Table(
     Column("source", Text, nullable=False, server_default=text("'b2b_profile_phone'")),
 )
 
+yk_payments = Table(
+    "yk_payments",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("uid", BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("package_qty", Integer, nullable=False),
+    Column("package_price_rub", Integer, nullable=False),
+    Column("provider", Text, nullable=False, server_default=text("'yookassa'")),
+    Column("yk_payment_id", Text, nullable=True),
+    Column("confirmation_url", Text, nullable=True),
+    Column("status", Text, nullable=False, server_default=text("'created'")),
+    Column("granted_requests", Integer, nullable=False, server_default=text("0")),
+    Column("notified", Boolean, nullable=False, server_default=text("false")),
+    Column("raw_metadata", JSONB, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+)
+
+Index("ix_yk_payments_status", yk_payments.c.status)
+Index("ix_yk_payments_uid", yk_payments.c.uid)
+Index("ix_yk_payments_yk_payment_id", yk_payments.c.yk_payment_id, unique=True)
+
 quota_balances = Table(
     "quota_balances",
     metadata,
@@ -752,6 +774,153 @@ async def count_confirmed_payments(uid: int) -> int:
     async with Session() as session:
         result = await session.execute(stmt)
         return int(result.scalar_one())
+
+
+# YooKassa payments DAL
+async def yk_create_payment(
+    uid: int,
+    *,
+    package_qty: int,
+    package_price_rub: int,
+    provider: str = "yookassa",
+    raw_metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    if package_qty <= 0:
+        raise ValueError("package_qty must be positive")
+    if package_price_rub <= 0:
+        raise ValueError("package_price_rub must be positive")
+    stmt = (
+        insert(yk_payments)
+        .values(
+            uid=uid,
+            package_qty=package_qty,
+            package_price_rub=package_price_rub,
+            provider=provider,
+            raw_metadata=raw_metadata,
+        )
+        .returning(yk_payments)
+    )
+    async with Session() as session, session.begin():
+        row = (await session.execute(stmt)).mappings().one()
+        return dict(row)
+
+
+async def yk_set_remote_payment(
+    payment_id: int,
+    *,
+    yk_payment_id: str,
+    confirmation_url: str,
+    raw_metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    stmt = (
+        update(yk_payments)
+        .where(yk_payments.c.id == payment_id)
+        .values(
+            yk_payment_id=yk_payment_id,
+            confirmation_url=confirmation_url,
+            status="pending",
+            raw_metadata=raw_metadata if raw_metadata is not None else yk_payments.c.raw_metadata,
+            updated_at=now_utc(),
+        )
+    )
+    async with Session() as session, session.begin():
+        result = await session.execute(stmt)
+        if result.rowcount == 0:
+            raise ValueError("yk payment not found")
+
+
+async def yk_update_status(
+    payment_id: int,
+    *,
+    status: str,
+    raw_metadata: Optional[dict[str, Any]] = None,
+    notified: Optional[bool] = None,
+) -> None:
+    stmt = (
+        update(yk_payments)
+        .where(yk_payments.c.id == payment_id)
+        .values(
+            status=status,
+            raw_metadata=raw_metadata if raw_metadata is not None else yk_payments.c.raw_metadata,
+            updated_at=now_utc(),
+        )
+    )
+    if notified is not None:
+        stmt = stmt.values(notified=notified)
+    async with Session() as session, session.begin():
+        result = await session.execute(stmt)
+        if result.rowcount == 0:
+            raise ValueError("yk payment not found")
+
+
+async def yk_mark_granted(payment_id: int, granted_requests: int) -> None:
+    stmt = (
+        update(yk_payments)
+        .where(yk_payments.c.id == payment_id)
+        .values(granted_requests=granted_requests, updated_at=now_utc())
+    )
+    async with Session() as session, session.begin():
+        await session.execute(stmt)
+
+
+async def yk_clear_confirmation_url(payment_id: int) -> None:
+    stmt = (
+        update(yk_payments)
+        .where(yk_payments.c.id == payment_id)
+        .values(confirmation_url=None, updated_at=now_utc())
+    )
+    async with Session() as session, session.begin():
+        await session.execute(stmt)
+
+
+async def yk_get_payment(payment_id: int) -> Optional[dict[str, Any]]:
+    async with Session() as session:
+        row = (
+            await session.execute(select(yk_payments).where(yk_payments.c.id == payment_id))
+        ).mappings().first()
+        return dict(row) if row else None
+
+
+async def yk_get_payment_by_remote(yk_payment_id: str) -> Optional[dict[str, Any]]:
+    async with Session() as session:
+        row = (
+            await session.execute(select(yk_payments).where(yk_payments.c.yk_payment_id == yk_payment_id))
+        ).mappings().first()
+        return dict(row) if row else None
+
+
+async def yk_list_pending(statuses: Optional[list[str]] = None) -> list[dict[str, Any]]:
+    statuses = statuses or ["pending", "waiting_for_capture"]
+    stmt = select(yk_payments).where(yk_payments.c.status.in_(statuses))
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return [dict(row) for row in result.mappings().all()]
+
+
+async def yk_count_pending_for_user(uid: int, statuses: Optional[list[str]] = None) -> int:
+    statuses = statuses or ["pending", "waiting_for_capture"]
+    stmt = select(func.count()).select_from(yk_payments).where(
+        yk_payments.c.uid == uid, yk_payments.c.status.in_(statuses)
+    )
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return int(result.scalar_one())
+
+
+async def yk_get_pending_for_user_and_qty(uid: int, qty: int, statuses: Optional[list[str]] = None) -> Optional[dict[str, Any]]:
+    statuses = statuses or ["pending", "waiting_for_capture"]
+    stmt = (
+        select(yk_payments)
+        .where(
+            yk_payments.c.uid == uid,
+            yk_payments.c.package_qty == qty,
+            yk_payments.c.status.in_(statuses),
+        )
+        .order_by(yk_payments.c.created_at.desc())
+    )
+    async with Session() as session:
+        row = (await session.execute(stmt)).mappings().first()
+        return dict(row) if row else None
 
 
 async def ensure_ref(uid: int, referred_by: Optional[int] = None) -> dict[str, Any]:
