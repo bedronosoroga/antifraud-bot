@@ -17,6 +17,7 @@ __pycache__/
 Thumbs.db
 
 # Data кеши/временные
+data/
 data/_cache/
 data/_tmp/
 
