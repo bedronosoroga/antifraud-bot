@@ -200,7 +200,16 @@ async def maybe_grant_invite_bonus(uid: int) -> Optional[int]:
     return sponsor if granted else None
 
 
-async def record_paid_subscription(payer_uid: int, *, amount_kop: int) -> AwardResult:
+HOLD_DAYS = 30
+
+
+async def record_paid_subscription(
+    payer_uid: int,
+    *,
+    amount_kop: int,
+    provider: Optional[str] = None,
+    payment_id: Optional[int] = None,
+) -> AwardResult:
     if amount_kop <= 0:
         return AwardResult(sponsor_uid=None, percent=0, amount_kop=amount_kop, awarded_kop=0)
 
@@ -229,6 +238,16 @@ async def record_paid_subscription(payer_uid: int, *, amount_kop: int) -> AwardR
         total_earned_delta_kop=direct_award,
         paid_refs_increment=paid_refs_increment,
     )
+    if direct_award > 0:
+        unlock_at = _ensure_utc(datetime.now(timezone.utc) + timedelta(days=HOLD_DAYS))
+        await dal.add_ref_lock(
+            sponsor_uid,
+            amount_kop=direct_award,
+            unlock_at=unlock_at,
+            provider=provider,
+            payment_id=payment_id,
+            level=1,
+        )
     await dal.set_ref_tier(sponsor_uid, tier=tier_index, percent=percent)
 
     second_line_uid = sponsor_info.get("referred_by")
@@ -241,6 +260,16 @@ async def record_paid_subscription(payer_uid: int, *, amount_kop: int) -> AwardR
             balance_delta_kop=second_award,
             total_earned_delta_kop=second_award,
         )
+        if second_award > 0:
+            unlock_at = _ensure_utc(datetime.now(timezone.utc) + timedelta(days=HOLD_DAYS))
+            await dal.add_ref_lock(
+                int(second_line_uid),
+                amount_kop=second_award,
+                unlock_at=unlock_at,
+                provider=provider,
+                payment_id=payment_id,
+                level=2,
+            )
 
     return AwardResult(
         sponsor_uid=sponsor_uid,
@@ -253,7 +282,13 @@ async def record_paid_subscription(payer_uid: int, *, amount_kop: int) -> AwardR
     )
 
 
-async def record_refund(payer_uid: int, *, amount_kop: int) -> AwardResult:
+async def record_refund(
+    payer_uid: int,
+    *,
+    amount_kop: int,
+    provider: Optional[str] = None,
+    payment_id: Optional[int] = None,
+) -> AwardResult:
     if amount_kop <= 0:
         return AwardResult(sponsor_uid=None, percent=0, amount_kop=amount_kop, awarded_kop=0)
 
@@ -269,13 +304,11 @@ async def record_refund(payer_uid: int, *, amount_kop: int) -> AwardResult:
     to_deduct = min(refund_amount, sponsor_info["balance_kop"])
 
     if to_deduct > 0:
-        updated = await dal.update_ref_stats(
-            sponsor_uid,
-            paid_increment=0,
-            balance_delta_kop=-to_deduct,
-            total_earned_delta_kop=-to_deduct,
-        )
+        await dal.reduce_ref_balance(sponsor_uid, to_deduct)
         await dal.set_ref_tier(sponsor_uid, tier=tier_index, percent=percent)
+        if payment_id is not None:
+            with suppress(Exception):
+                await dal.refund_locks_by_payment(payment_id, provider)
 
     second_line_uid = sponsor_info.get("referred_by")
     second_refund = 0
@@ -284,12 +317,10 @@ async def record_refund(payer_uid: int, *, amount_kop: int) -> AwardResult:
         second_calc = math.floor(amount_kop * REF_SECOND_LINE_PERCENT / 100)
         second_refund = min(second_calc, second_info["balance_kop"])
         if second_refund > 0:
-            await dal.update_ref_stats(
-                int(second_line_uid),
-                paid_increment=0,
-                balance_delta_kop=-second_refund,
-                total_earned_delta_kop=-second_refund,
-            )
+            await dal.reduce_ref_balance(int(second_line_uid), second_refund)
+            if payment_id is not None:
+                with suppress(Exception):
+                    await dal.refund_locks_by_payment(payment_id, provider)
 
     return AwardResult(
         sponsor_uid=sponsor_uid,
@@ -300,6 +331,16 @@ async def record_refund(payer_uid: int, *, amount_kop: int) -> AwardResult:
         second_line_percent=REF_SECOND_LINE_PERCENT if second_refund else 0,
         second_line_awarded_kop=-second_refund,
     )
+
+
+async def handle_payment_refund(provider: str, payment_id: int) -> None:
+    rows = await dal.refund_locks_by_payment(payment_id, provider)
+    for row in rows:
+        uid = int(row.get("uid"))
+        amount = int(row.get("amount_kop") or 0)
+        if amount <= 0:
+            continue
+        await dal.reduce_ref_balance(uid, amount)
 
 
 async def get_dashboard(uid: int, *, now: Optional[datetime] = None) -> ReferralDashboard:
@@ -386,7 +427,9 @@ async def request_payout(uid: int, *, amount_kop: int, details: Optional[dict] =
         )
 
     info = await get_info(uid)
-    if amount_kop > info["balance_kop"]:
+    locked = await dal.sum_active_locks(uid)
+    available_balance = max(info["balance_kop"] - locked, 0)
+    if amount_kop > available_balance:
         return PayoutRequest(
             amount_kop=amount_kop,
             net_amount_kop=0,

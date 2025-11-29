@@ -166,7 +166,12 @@ async def confirm_payment(payment_id: str) -> ConfirmResult:
     await dal.mark_payment_status(uid, payment_id, status="confirmed")
     await _quota.add(uid, package.qty, source="purchase", metadata={"payment_id": payment_id})
 
-    award = await refs.record_paid_subscription(uid, amount_kop=payment["amount_kop"])
+    award = await refs.record_paid_subscription(
+        uid,
+        amount_kop=payment["amount_kop"],
+        provider=payment.get("provider_invoice_id") or "legacy",
+        payment_id=None,
+    )
 
     confirmed_count = await dal.count_confirmed_payments(uid)
     user = await dal.get_user(uid)

@@ -20,7 +20,8 @@ from app.domain.catalog_cache.service import AtiCodeCache
 from app.bot.handlers_numeric import init_checks_runtime
 from app.bot import runtime as bot_runtime
 from app.domain.payments.yookassa_service import YooKassaService
-from app.keyboards import kb_payment_success
+from app.keyboards import kb_payment_success, kb_payment_error
+from app.domain.referrals import service as referral_service
 from app.keyboards import kb_payment_error
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ _catalog_heartbeat = {
 _yk_heartbeat = {"runs": 0, "updated": 0, "failures": 0, "last_log_ts": datetime.now(timezone.utc).timestamp(), "429": 0, "pending": 0}
 _scheduler_bot: Bot | None = None
 YK_POLL_INTERVAL = 10
+STARS_EXPIRE_INTERVAL = 30
 
 
 def _maybe_log_catalog_heartbeat(now_ts: float) -> None:
@@ -126,6 +128,13 @@ async def job_poll_yk_payments(bot: Bot | None = None) -> None:
                     metadata={"payment_id": payment["id"], "yk_payment_id": payment.get("yk_payment_id")},
                 )
                 await dal.yk_mark_granted(payment["id"], payment["package_qty"])
+                with suppress(Exception):
+                    await referral_service.record_paid_subscription(
+                        payment["uid"],
+                        amount_kop=int(payment.get("package_price_rub", 0) * 100),
+                        provider="yookassa",
+                        payment_id=payment.get("id"),
+                    )
                 _yk_heartbeat["updated"] += 1
                 if bot is not None and not payment.get("notified"):
                     balance = (await quota.get_state(payment["uid"])).balance
@@ -144,6 +153,13 @@ async def job_poll_yk_payments(bot: Bot | None = None) -> None:
                         await dal.yk_update_status(payment["id"], status="succeeded", notified=True)
             elif status in {"canceled", "expired", "refunded"}:
                 await dal.yk_update_status(payment["id"], status=status, raw_metadata=res.metadata)
+                if status == "refunded":
+                    with suppress(Exception):
+                        await referral_service.handle_payment_refund("yookassa", payment["id"])
+                meta = payment.get("raw_metadata") or {}
+                if meta.get("chat_id") and meta.get("message_id") and bot is not None:
+                    with suppress(Exception):
+                        await bot.delete_message(meta["chat_id"], meta["message_id"])
         except Exception as exc:
             _yk_heartbeat["failures"] += 1
             msg = str(exc)
@@ -158,6 +174,36 @@ async def job_poll_yk_payments(bot: Bot | None = None) -> None:
 async def job_daily_digest(bot: Bot) -> None:
     # Optional job – implement later as needed.
     return
+
+
+async def job_expire_stars(bot: Bot | None = None) -> None:
+    try:
+        pending = await dal.yk_list_pending_by_provider("stars", statuses=["pending"])
+    except Exception:
+        logger.exception("failed to fetch pending stars payments")
+        return
+    if not pending:
+        return
+    now = datetime.now(timezone.utc)
+    for payment in pending:
+        created_at = payment.get("created_at")
+        if not created_at:
+            continue
+        age = now - created_at
+        if age.total_seconds() > 3600:
+            meta = payment.get("raw_metadata") or {}
+            if meta.get("chat_id") and meta.get("message_id") and bot is not None:
+                with suppress(Exception):
+                    await bot.delete_message(meta["chat_id"], meta["message_id"])
+            with suppress(Exception):
+                await dal.yk_update_status(payment["id"], status="expired")
+            if bot is not None:
+                with suppress(Exception):
+                    await bot.send_message(
+                        payment["uid"],
+                        "⏳ Счёт в Stars устарел. Создайте новый, чтобы оплатить.",
+                        reply_markup=kb_payment_error(str(payment["id"])),
+                    )
 
 
 async def job_catalog_reload_if_needed() -> None:
@@ -238,6 +284,13 @@ def _register_jobs(scheduler: AsyncIOScheduler) -> None:
         id="yk_poll",
         replace_existing=True,
     )
+    scheduler.add_job(
+        job_expire_stars,
+        IntervalTrigger(seconds=STARS_EXPIRE_INTERVAL),
+        args=[_scheduler_bot],
+        id="stars_expire",
+        replace_existing=True,
+    )
     # Optional daily digest (disabled by default)
     # scheduler.add_job(
     #     job_daily_digest,
@@ -255,4 +308,5 @@ __all__ = [
     "job_catalog_reload_if_needed",
     "job_daily_digest",
     "job_poll_yk_payments",
+    "job_expire_stars",
 ]

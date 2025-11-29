@@ -29,6 +29,7 @@ __all__ = [
     "PAYMENTS_SANDBOX_NOTE",
     "ADMINS",
     "YooKassaConfig",
+    "RUB_STARS_RATE",
     "B2B_ATI_LEADS_CHAT_ID",
     "load_config",
     "cfg",
@@ -391,6 +392,7 @@ REF_WITHDRAW_MIN_USD: int = 10
 REF_WITHDRAW_FEE_PERCENT: int = 8
 COINMARKETCAP_API_KEY: str | None = env_str("COINMARKETCAP_API_KEY")
 B2B_ATI_LEADS_CHAT_ID: int | None = cfg.b2b_leads_chat_id
+RUB_STARS_RATE: float = float(env_str("RUB_STARS_RATE", "1.6") or 1.6)
 
 REQUEST_PACKAGES: list[RequestPackage] = [
     RequestPackage(qty=5, price_rub=99, unit_price_rub=19.8, discount_hint="~20 ₽/шт"),

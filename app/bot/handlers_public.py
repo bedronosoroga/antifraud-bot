@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import math
 from contextlib import suppress
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
@@ -13,7 +14,16 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Filter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LabeledPrice,
+    Message,
+    PreCheckoutQuery,
+    ReplyKeyboardRemove,
+    SuccessfulPayment,
+)
 
 from app import texts
 from app.bot import runtime as bot_runtime
@@ -25,6 +35,7 @@ from app.domain.referrals import service as referral_service
 from app.domain.rates import service as rates_service
 from app.domain.onboarding.free import FreeService
 from app.domain.quotas.service import InsufficientQuotaError
+from app.config import RUB_STARS_RATE
 from app.keyboards import (
     kb_free_info,
     kb_history,
@@ -258,6 +269,27 @@ async def _refresh_yk_status(payment: dict[str, Any]) -> dict[str, Any]:
     return updated or {**payment, "status": result.status, "raw_metadata": result.metadata}
 
 
+async def _cancel_pending_payments(uid: int, provider: str, bot) -> None:
+    pending = await dal.yk_list_pending_by_user_provider(
+        uid, provider, statuses=["pending", "waiting_for_capture", "expired", "canceled"]
+    )
+    for payment in pending:
+        meta = payment.get("raw_metadata") or {}
+        chat_id = meta.get("chat_id")
+        msg_id = meta.get("message_id")
+        if chat_id and msg_id:
+            with suppress(Exception):
+                await bot.delete_message(chat_id, msg_id)
+        if payment.get("status") != "succeeded":
+            with suppress(Exception):
+                await dal.yk_mark_canceled(payment["id"])
+
+
+async def _cancel_all_pending(uid: int, bot) -> None:
+    await _cancel_pending_payments(uid, "yookassa", bot)
+    await _cancel_pending_payments(uid, "stars", bot)
+
+
 async def _get_bot_username(target: Message | CallbackQuery, state: FSMContext) -> str:
     data = await state.get_data()
     cached = data.get("bot_username")
@@ -425,9 +457,23 @@ async def _show_payment_pending(
 async def _handle_payment_cancel(query: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     payment_id = data.get("buy_payment_id")
-    if payment_id and isinstance(payment_id, str):
-        with suppress(Exception):
-            await sandbox_pay.simulate_failure(payment_id, reason="cancel")
+    if payment_id:
+        try:
+            pid_int = int(payment_id)
+        except (TypeError, ValueError):
+            pid_int = None
+        if pid_int is not None:
+            payment = await dal.yk_get_payment(pid_int)
+            if payment and payment.get("status") not in {"succeeded", "canceled", "expired"}:
+                meta = payment.get("raw_metadata") or {}
+                if meta.get("chat_id") and meta.get("message_id"):
+                    with suppress(Exception):
+                        await query.bot.delete_message(meta["chat_id"], meta["message_id"])
+                with suppress(Exception):
+                    await dal.yk_mark_canceled(pid_int)
+        else:
+            with suppress(Exception):
+                await sandbox_pay.simulate_failure(str(payment_id), reason="cancel")
     await state.update_data({"buy_payment_id": None})
     await _replace_screen(state, "buy-failure")
     text = texts.payment_error_text("cancel")
@@ -1337,18 +1383,50 @@ async def on_buy_method(query: CallbackQuery, state: FSMContext) -> None:
     uid = _user_id(query)
     if uid is None:
         return
+    # ensure only one active payment (any provider)
+    await _cancel_all_pending(uid, query.bot)
     method = query.data.split(":")[-1]
     if method == "stars":
-        payment_id = "0"
+        pkg = _get_package(code)
+        # calculate stars amount: rub * rate, round up to tens, minus 1
+        stars_raw = pkg.price_rub * RUB_STARS_RATE
+        stars_amount = int(math.ceil(stars_raw / 10.0) * 10 - 1)
+        if stars_amount <= 0:
+            await query.answer("Сумма оплаты некорректна", show_alert=True)
+            return
         try:
-            payment = await sandbox_pay.start_demo_checkout(uid, code)
-            payment_id = payment["payment_id"]
-            await sandbox_pay.simulate_failure(payment["payment_id"], reason="stars")
+            payment = await dal.yk_create_payment(
+                uid,
+                package_qty=pkg.qty,
+                package_price_rub=pkg.price_rub,
+                provider="stars",
+                raw_metadata={"amount_stars": stars_amount},
+            )
+            payload = str(payment["id"])
+            title = f"{pkg.qty} запросов"
+            description = "Оплата пакета запросов через Telegram Stars"
+            prices = [LabeledPrice(label=title, amount=stars_amount)]
+            sent = await query.message.answer_invoice(
+                title=title,
+                description=description,
+                payload=payload,
+                provider_token="",  # not needed for stars
+                currency="XTR",
+                prices=prices,
+            )
+            meta = {
+                "chat_id": sent.chat.id,
+                "message_id": sent.message_id,
+                "amount_stars": stars_amount,
+            }
+            with suppress(Exception):
+                await dal.yk_update_status(payment["id"], status="pending", raw_metadata=meta)
+            await state.update_data({"buy_payment_id": str(payment["id"])})
         except Exception:
-            logging.exception("failed to handle stars payment")
-        await state.update_data({"buy_payment_id": None})
-        await _replace_screen(state, "buy-failure")
-        await _answer(query, texts.payment_error_text("stars"), kb_payment_error(payment_id))
+            logging.exception("failed to send Stars invoice")
+            await state.update_data({"buy_payment_id": None})
+            await _replace_screen(state, "buy-failure")
+            await _answer(query, texts.payment_error_text("error"), kb_payment_error("0"))
         return
 
     if method == "card":
@@ -1360,15 +1438,8 @@ async def on_buy_method(query: CallbackQuery, state: FSMContext) -> None:
         if service is None:
             await query.answer("Оплата картой временно недоступна", show_alert=True)
             return
-        # Limit pending payments per user and reuse existing pending for same qty
-        pending_count = await dal.yk_count_pending_for_user(uid)
-        existing = await dal.yk_get_pending_for_user_and_qty(uid, pkg.qty)
-        if existing and existing.get("confirmation_url"):
-            await _show_payment_pending(query, state, str(existing["id"]), existing.get("confirmation_url"))
-            return
-        if pending_count >= 2:
-            await query.answer("Сначала завершите предыдущие оплаты", show_alert=True)
-            return
+        # cancel previous pending yookassa payments
+        await _cancel_pending_payments(uid, "yookassa", query.bot)
         bot_username = await _get_bot_username(query, state)
         return_url = f"https://t.me/{bot_username}"
         try:
@@ -1483,3 +1554,45 @@ async def on_buy_check(query: CallbackQuery, state: FSMContext) -> None:
 async def on_buy_retry(query: CallbackQuery, state: FSMContext) -> None:
     await query.answer("Повторяем…")
     await _show_payment_packages(query, state, replace=True)
+@router.pre_checkout_query()
+async def on_pre_checkout(query: PreCheckoutQuery) -> None:
+    # For Stars payments provider_token is empty; just accept if payload looks valid
+    try:
+        int(query.invoice_payload)
+    except (TypeError, ValueError):
+        await query.answer(ok=False, error_message="Некорректный счёт")
+        return
+    await query.answer(ok=True)
+
+
+@router.message(F.successful_payment)
+async def on_successful_payment(message: Message, state: FSMContext) -> None:
+    payment: SuccessfulPayment = message.successful_payment  # type: ignore[assignment]
+    payload = payment.invoice_payload
+    try:
+        payment_id = int(payload)
+    except (TypeError, ValueError):
+        return
+    record = await dal.yk_get_payment(payment_id)
+    if record is None or record.get("provider") != "stars":
+        return
+    if record.get("status") == "succeeded" and record.get("granted_requests", 0) > 0:
+        return
+    record["status"] = "succeeded"
+    await dal.yk_update_status(payment_id, status="succeeded")
+    granted, balance = await _grant_yk_payment_if_needed(record)
+    with suppress(Exception):
+        await referral_service.record_paid_subscription(
+            record["uid"],
+            amount_kop=int(record.get("package_price_rub", 0) * 100),
+            provider=record.get("provider"),
+            payment_id=record.get("id"),
+        )
+    # Remove old invoice message if stored
+    meta = record.get("raw_metadata") or {}
+    if meta.get("chat_id") and meta.get("message_id"):
+        with suppress(Exception):
+            await message.bot.delete_message(meta["chat_id"], meta["message_id"])
+    text = texts.payment_success_text(granted or record.get("granted_requests", 0), balance)
+    await _replace_screen(state, "buy-success")
+    await message.answer(text, reply_markup=kb_payment_success())

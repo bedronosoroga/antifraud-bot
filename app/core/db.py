@@ -142,6 +142,23 @@ ref_payouts = Table(
     Column("details", JSONB, nullable=True),
 )
 
+ref_locks = Table(
+    "ref_locks",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("uid", BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("amount_kop", BigInteger, nullable=False),
+    Column("unlock_at", DateTime(timezone=True), nullable=False),
+    Column("provider", Text, nullable=True),
+    Column("payment_id", BigInteger, nullable=True),
+    Column("level", Integer, nullable=False, server_default=text("1")),
+    Column("refunded", Boolean, nullable=False, server_default=text("false")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+)
+
+Index("ix_ref_locks_uid_refunded", ref_locks.c.uid, ref_locks.c.refunded)
+Index("ix_ref_locks_payment", ref_locks.c.payment_id, ref_locks.c.provider)
+
 pending_payments = Table(
     "pending_payments",
     metadata,
@@ -873,6 +890,16 @@ async def yk_clear_confirmation_url(payment_id: int) -> None:
         await session.execute(stmt)
 
 
+async def yk_mark_canceled(payment_id: int) -> None:
+    stmt = (
+        update(yk_payments)
+        .where(yk_payments.c.id == payment_id)
+        .values(status="canceled", updated_at=now_utc())
+    )
+    async with Session() as session, session.begin():
+        await session.execute(stmt)
+
+
 async def yk_get_payment(payment_id: int) -> Optional[dict[str, Any]]:
     async with Session() as session:
         row = (
@@ -891,7 +918,31 @@ async def yk_get_payment_by_remote(yk_payment_id: str) -> Optional[dict[str, Any
 
 async def yk_list_pending(statuses: Optional[list[str]] = None) -> list[dict[str, Any]]:
     statuses = statuses or ["pending", "waiting_for_capture"]
-    stmt = select(yk_payments).where(yk_payments.c.status.in_(statuses))
+    stmt = select(yk_payments).where(
+        yk_payments.c.status.in_(statuses), yk_payments.c.provider == "yookassa"
+    )
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return [dict(row) for row in result.mappings().all()]
+
+
+async def yk_list_pending_by_provider(provider: str, statuses: Optional[list[str]] = None) -> list[dict[str, Any]]:
+    statuses = statuses or ["pending", "waiting_for_capture"]
+    stmt = select(yk_payments).where(yk_payments.c.status.in_(statuses), yk_payments.c.provider == provider)
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return [dict(row) for row in result.mappings().all()]
+
+
+async def yk_list_pending_by_user_provider(
+    uid: int,
+    provider: str,
+    statuses: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
+    statuses = statuses or ["pending", "waiting_for_capture"]
+    stmt = select(yk_payments).where(
+        yk_payments.c.uid == uid, yk_payments.c.provider == provider, yk_payments.c.status.in_(statuses)
+    )
     async with Session() as session:
         result = await session.execute(stmt)
         return [dict(row) for row in result.mappings().all()]
@@ -907,7 +958,7 @@ async def yk_count_pending_for_user(uid: int, statuses: Optional[list[str]] = No
         return int(result.scalar_one())
 
 
-async def yk_get_pending_for_user_and_qty(uid: int, qty: int, statuses: Optional[list[str]] = None) -> Optional[dict[str, Any]]:
+async def yk_get_pending_for_user_and_qty(uid: int, qty: int, statuses: Optional[list[str]] = None, *, provider: Optional[str] = None) -> Optional[dict[str, Any]]:
     statuses = statuses or ["pending", "waiting_for_capture"]
     stmt = (
         select(yk_payments)
@@ -918,9 +969,23 @@ async def yk_get_pending_for_user_and_qty(uid: int, qty: int, statuses: Optional
         )
         .order_by(yk_payments.c.created_at.desc())
     )
+    if provider:
+        stmt = stmt.where(yk_payments.c.provider == provider)
     async with Session() as session:
         row = (await session.execute(stmt)).mappings().first()
         return dict(row) if row else None
+
+
+async def yk_count_pending_for_user_by_provider(uid: int, provider: str, statuses: Optional[list[str]] = None) -> int:
+    statuses = statuses or ["pending", "waiting_for_capture"]
+    stmt = (
+        select(func.count())
+        .select_from(yk_payments)
+        .where(yk_payments.c.uid == uid, yk_payments.c.status.in_(statuses), yk_payments.c.provider == provider)
+    )
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return int(result.scalar_one())
 
 
 async def ensure_ref(uid: int, referred_by: Optional[int] = None) -> dict[str, Any]:
@@ -1212,6 +1277,80 @@ async def add_payout(uid: int, *, amount_kop: int, status: str, details: Optiona
     async with Session() as session, session.begin():
         result = await session.execute(stmt)
         return dict(result.mappings().one())
+
+
+# Referral locks
+async def add_ref_lock(
+    uid: int,
+    *,
+    amount_kop: int,
+    unlock_at: datetime,
+    provider: Optional[str],
+    payment_id: Optional[int],
+    level: int = 1,
+) -> None:
+    stmt = (
+        insert(ref_locks)
+        .values(
+            uid=uid,
+            amount_kop=amount_kop,
+            unlock_at=_ensure_datetime_utc(unlock_at),
+            provider=provider,
+            payment_id=payment_id,
+            level=level,
+        )
+        .returning(ref_locks.c.id)
+    )
+    async with Session() as session, session.begin():
+        await session.execute(stmt)
+
+
+async def sum_active_locks(uid: int, *, now: Optional[datetime] = None) -> int:
+    now_dt = _ensure_datetime_utc(now)
+    stmt = (
+        select(func.coalesce(func.sum(ref_locks.c.amount_kop), 0))
+        .where(ref_locks.c.uid == uid, ref_locks.c.refunded.is_(False), ref_locks.c.unlock_at > now_dt)
+    )
+    async with Session() as session:
+        result = await session.execute(stmt)
+        return int(result.scalar_one() or 0)
+
+
+async def refund_locks_by_payment(payment_id: int, provider: Optional[str]) -> int:
+    stmt = (
+        update(ref_locks)
+        .where(ref_locks.c.payment_id == payment_id)
+        .where(ref_locks.c.provider == provider)
+        .where(ref_locks.c.refunded.is_(False))
+        .values(refunded=True)
+        .returning(ref_locks.c.amount_kop, ref_locks.c.uid)
+    )
+    async with Session() as session, session.begin():
+        rows = (await session.execute(stmt)).mappings().all()
+        return rows
+
+
+async def reduce_ref_balance(uid: int, amount_kop: int) -> int:
+    """Decrease referral balance and total_earned by up to amount_kop (not below zero). Returns deducted amount."""
+    if amount_kop <= 0:
+        return 0
+    async with Session() as session, session.begin():
+        current_row = (
+            await session.execute(select(referrals.c.balance_kop, referrals.c.total_earned_kop).where(referrals.c.uid == uid))
+        ).first()
+        if current_row is None:
+            return 0
+        current_balance = int(current_row[0] or 0)
+        current_total = int(current_row[1] or 0)
+        to_deduct = min(current_balance, amount_kop)
+        new_total = max(0, current_total - to_deduct)
+        stmt = (
+            update(referrals)
+            .where(referrals.c.uid == uid)
+            .values(balance_kop=referrals.c.balance_kop - to_deduct, total_earned_kop=new_total, updated_at=now_utc())
+        )
+        await session.execute(stmt)
+        return to_deduct
 
 
 async def ensure_quota_account(uid: int) -> dict[str, Any]:
