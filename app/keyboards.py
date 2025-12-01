@@ -171,6 +171,10 @@ def kb_payment_error(payment_id: str) -> InlineKeyboardMarkup:
     )
 
 
+def kb_payment_email_cancel() -> InlineKeyboardMarkup:
+    return _kb([[InlineKeyboardButton(text="❌ Отменить", callback_data="buy:email:cancel")]])
+
+
 def kb_referral_main(link: str) -> InlineKeyboardMarkup:
     return _kb(
         [
@@ -279,6 +283,7 @@ __all__ = [
     "kb_payment_pending",
     "kb_payment_success",
     "kb_payment_error",
+    "kb_payment_email_cancel",
     "kb_referral_main",
     "kb_support",
     "kb_b2b_ati_intro",

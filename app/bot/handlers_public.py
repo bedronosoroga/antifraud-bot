@@ -49,6 +49,7 @@ from app.keyboards import (
     kb_payment_methods,
     kb_payment_pending,
     kb_payment_success,
+    kb_payment_email_cancel,
     kb_packages,
     kb_profile,
     kb_request_has_balance,
@@ -86,6 +87,7 @@ INPUT_REF_TAG = "ref:tag:create"
 INPUT_WITHDRAW_AMOUNT = "ref:withdraw:amount"
 INPUT_WITHDRAW_DETAILS = "ref:withdraw:details"
 INPUT_B2B_ATI_DETAILS = "b2b_ati_details"
+INPUT_PAYMENT_EMAIL = "payment:email"
 
 PACKAGE_MAP = {f"pkg{pkg.qty}": pkg for pkg in REQUEST_PACKAGES}
 PACKAGE_BY_QTY = {pkg.qty: pkg for pkg in REQUEST_PACKAGES}
@@ -452,6 +454,63 @@ async def _show_payment_pending(
         return sent
     sent = await target.answer(texts.payment_pending_text(), reply_markup=keyboard)
     return sent
+
+
+async def _start_yk_payment(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    *,
+    uid: int,
+    pkg: RequestPackage,
+    email: str | None,
+) -> bool:
+    service = _get_yk_service()
+    if service is None:
+        if isinstance(target, CallbackQuery):
+            await target.answer("Оплата картой временно недоступна", show_alert=True)
+        else:
+            await target.answer("Оплата картой временно недоступна")
+        return False
+    await _cancel_pending_payments(uid, "yookassa", target.bot)
+    bot_username = await _get_bot_username(target, state)
+    return_url = f"https://t.me/{bot_username}"
+    payment: Optional[dict[str, Any]] = None
+    try:
+        payment = await dal.yk_create_payment(
+            uid,
+            package_qty=pkg.qty,
+            package_price_rub=pkg.price_rub,
+            provider="yookassa",
+        )
+        created = await service.create_payment(
+            internal_payment_id=payment["id"],
+            user_id=uid,
+            qty=pkg.qty,
+            price_rub=pkg.price_rub,
+            return_url=return_url,
+            receipt_email=email,
+            use_receipt=cfg.payment_email_enabled and bool(email),
+        )
+        await dal.yk_set_remote_payment(
+            payment["id"],
+            yk_payment_id=created.payment_id,
+            confirmation_url=created.confirmation_url,
+        )
+        sent = await _show_payment_pending(target, state, str(payment["id"]), created.confirmation_url)
+        if sent:
+            meta = payment.get("raw_metadata") or {}
+            meta.update({"chat_id": sent.chat.id, "message_id": sent.message_id})
+            with suppress(Exception):
+                await dal.yk_update_status(payment["id"], status="pending", raw_metadata=meta)
+        return True
+    except Exception:
+        logging.exception("failed to create yookassa payment")
+        with suppress(Exception):
+            if payment and payment.get("id"):
+                await dal.yk_update_status(payment.get("id"), status="failed")
+        await _replace_screen(state, "buy-failure")
+        await _answer(target, texts.payment_error_text("error"), kb_payment_error("0"))
+        return False
 
 
 async def _handle_payment_cancel(query: CallbackQuery, state: FSMContext) -> None:
@@ -983,6 +1042,9 @@ async def on_text_input(message: Message, state: FSMContext) -> None:
     if mode == INPUT_REF_TAG:
         await _handle_ref_tag_input(message, state)
         return
+    if mode == INPUT_PAYMENT_EMAIL:
+        await _handle_payment_email_input(message, state)
+        return
     if mode == INPUT_WITHDRAW_AMOUNT:
         await _handle_withdraw_amount_input(message, state)
         return
@@ -1434,49 +1496,63 @@ async def on_buy_method(query: CallbackQuery, state: FSMContext) -> None:
             await query.answer("Оплата картой временно недоступна", show_alert=True)
             return
         pkg = _get_package(code)
-        service = _get_yk_service()
-        if service is None:
-            await query.answer("Оплата картой временно недоступна", show_alert=True)
-            return
-        # cancel previous pending yookassa payments
-        await _cancel_pending_payments(uid, "yookassa", query.bot)
-        bot_username = await _get_bot_username(query, state)
-        return_url = f"https://t.me/{bot_username}"
-        try:
-            payment = await dal.yk_create_payment(
-                uid,
-                package_qty=pkg.qty,
-                package_price_rub=pkg.price_rub,
-                provider="yookassa",
-            )
-            created = await service.create_payment(
-                internal_payment_id=payment["id"],
-                user_id=uid,
-                qty=pkg.qty,
-                price_rub=pkg.price_rub,
-                return_url=return_url,
-            )
-            await dal.yk_set_remote_payment(
-                payment["id"],
-                yk_payment_id=created.payment_id,
-                confirmation_url=created.confirmation_url,
-            )
-            sent = await _show_payment_pending(query, state, str(payment["id"]), created.confirmation_url)
-            if sent:
-                meta = payment.get("raw_metadata") or {}
-                meta.update({"chat_id": sent.chat.id, "message_id": sent.message_id})
-                with suppress(Exception):
-                    await dal.yk_update_status(payment["id"], status="pending", raw_metadata=meta)
-            return
-        except Exception:
-            logging.exception("failed to create yookassa payment")
-            with suppress(Exception):
-                await dal.yk_update_status(payment["id"], status="failed")
-            await _replace_screen(state, "buy-failure")
-            await _answer(query, texts.payment_error_text("error"), kb_payment_error("0"))
-            return
+        email_to_use: str | None = None
+        if cfg.payment_email_enabled:
+            try:
+                email_to_use = await dal.get_user_email(uid)
+            except Exception:
+                logging.exception("failed to fetch user email %s", uid)
+            if not email_to_use:
+                await _set_input_mode(state, INPUT_PAYMENT_EMAIL)
+                await state.update_data({"payment_email_pending": True})
+                await _replace_screen(state, "buy-email")
+                await _answer(query, texts.payment_email_prompt_text(), kb_payment_email_cancel())
+                return
+        await state.update_data({"payment_email_pending": False})
+        await _start_yk_payment(query, state, uid=uid, pkg=pkg, email=email_to_use)
+        return
 
     await query.answer("Способ оплаты недоступен", show_alert=True)
+
+
+@router.callback_query(F.data == "buy:email:cancel")
+async def on_payment_email_cancel(query: CallbackQuery, state: FSMContext) -> None:
+    await _set_input_mode(state, INPUT_NONE)
+    await state.update_data({"payment_email_pending": False})
+    await _show_payment_methods_screen(query, state, replace=True)
+
+
+async def _handle_payment_email_input(message: Message, state: FSMContext) -> None:
+    uid = _user_id(message)
+    if uid is None:
+        return
+    raw = (message.text or "").strip()
+    if not raw:
+        await message.answer(texts.payment_email_invalid_text())
+        return
+    try:
+        await dal.set_user_email(uid, raw)
+    except ValueError:
+        await message.answer(texts.payment_email_invalid_text())
+        return
+    except Exception:
+        logging.exception("failed to save user email %s", uid)
+        await message.answer("Не удалось сохранить почту. Попробуйте позже.")
+        return
+    await _set_input_mode(state, INPUT_NONE)
+    await state.update_data({"payment_email_pending": False})
+    await message.answer(texts.payment_email_saved_text(raw))
+    data = await state.get_data()
+    code = data.get("buy_package_code")
+    if not code:
+        await _show_payment_packages(message, state, replace=False)
+        return
+    try:
+        pkg = _get_package(code)
+    except ValueError:
+        await message.answer("Пакет недоступен")
+        return
+    await _start_yk_payment(message, state, uid=uid, pkg=pkg, email=raw)
 
 
 @router.callback_query(F.data.startswith("buy:check:"))
