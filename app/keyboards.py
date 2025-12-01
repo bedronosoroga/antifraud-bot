@@ -51,7 +51,7 @@ def kb_request_has_balance() -> InlineKeyboardMarkup:
 def kb_free_info() -> InlineKeyboardMarkup:
     return _kb(
         [
-            [InlineKeyboardButton(text="🤝 Пригласить", callback_data="ref:open")],
+            [InlineKeyboardButton(text="🤝 Партнёрская программа", callback_data="ref:open")],
             [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="nav:menu")],
         ]
     )
@@ -172,7 +172,7 @@ def kb_payment_error(payment_id: str) -> InlineKeyboardMarkup:
 
 
 def kb_payment_email_cancel() -> InlineKeyboardMarkup:
-    return _kb([[InlineKeyboardButton(text="❌ Отменить", callback_data="buy:email:cancel")]])
+    return _kb([[InlineKeyboardButton(text="❌ Отменить оплату", callback_data="buy:email:cancel")]])
 
 
 def kb_referral_main(link: str) -> InlineKeyboardMarkup:

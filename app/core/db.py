@@ -67,10 +67,13 @@ users = Table(
     Column("username", Text, nullable=True),
     Column("first_name", Text, nullable=True),
     Column("last_name", Text, nullable=True),
+    Column("email", Text, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
     Column("company_ati", String(length=7), nullable=True),
     CheckConstraint("company_ati ~ '^[0-9]{1,7}$'", name="ck_users_company_ati_format"),
 )
+
+Index("ix_users_email", users.c.email)
 
 subs = Table(
     "subs",
@@ -427,6 +430,33 @@ async def get_user(uid: int) -> Optional[dict[str, Any]]:
         result = await session.execute(select(users).where(users.c.id == uid))
         row = result.mappings().first()
         return dict(row) if row else None
+
+
+def _validate_email(email: str) -> str:
+    trimmed = email.strip()
+    if not trimmed:
+        raise ValueError("email must be non-empty")
+    if "@" not in trimmed or "." not in trimmed.split("@")[-1]:
+        raise ValueError("email format is invalid")
+    return trimmed
+
+
+async def set_user_email(uid: int, email: str) -> None:
+    normalized = _validate_email(email)
+    async with Session() as session, session.begin():
+        stmt = (
+            update(users)
+            .where(users.c.id == uid)
+            .values(email=normalized)
+        )
+        await session.execute(stmt)
+
+
+async def get_user_email(uid: int) -> Optional[str]:
+    async with Session() as session:
+        result = await session.execute(select(users.c.email).where(users.c.id == uid))
+        value = result.scalar_one_or_none()
+        return value
 
 
 async def set_company_ati(uid: int, ati_code: Optional[str]) -> None:

@@ -21,6 +21,7 @@ from aiogram.types import (
     LabeledPrice,
     Message,
     PreCheckoutQuery,
+    ForceReply,
     ReplyKeyboardRemove,
     SuccessfulPayment,
 )
@@ -1070,7 +1071,10 @@ async def _noop_start_forward(_: Message, state: FSMContext) -> None:
     ~F.text.regexp(r"^\d{1,7}$"),
 )
 async def on_text_generic(message: Message, state: FSMContext) -> None:
-    await message.answer(texts.err_need_digits_upto_7(), reply_markup=kb_menu())
+    await message.answer(
+        texts.err_need_digits_upto_7(),
+        reply_markup=ForceReply(selective=False),
+    )
 
 
 async def _handle_profile_code_input(message: Message, state: FSMContext) -> None:
@@ -1506,7 +1510,14 @@ async def on_buy_method(query: CallbackQuery, state: FSMContext) -> None:
                 await _set_input_mode(state, INPUT_PAYMENT_EMAIL)
                 await state.update_data({"payment_email_pending": True})
                 await _replace_screen(state, "buy-email")
-                await _answer(query, texts.payment_email_prompt_text(), kb_payment_email_cancel())
+                await query.message.answer(
+                    texts.payment_email_prompt_text(),
+                    reply_markup=ForceReply(selective=False),
+                )
+                await query.message.answer(
+                    "Если хотите отменить — нажмите ниже.",
+                    reply_markup=kb_payment_email_cancel(),
+                )
                 return
         await state.update_data({"payment_email_pending": False})
         await _start_yk_payment(query, state, uid=uid, pkg=pkg, email=email_to_use)
@@ -1528,12 +1539,12 @@ async def _handle_payment_email_input(message: Message, state: FSMContext) -> No
         return
     raw = (message.text or "").strip()
     if not raw:
-        await message.answer(texts.payment_email_invalid_text())
+        await message.answer(texts.payment_email_invalid_text(), reply_markup=kb_payment_email_cancel())
         return
     try:
         await dal.set_user_email(uid, raw)
     except ValueError:
-        await message.answer(texts.payment_email_invalid_text())
+        await message.answer(texts.payment_email_invalid_text(), reply_markup=kb_payment_email_cancel())
         return
     except Exception:
         logging.exception("failed to save user email %s", uid)

@@ -35,9 +35,11 @@ class YooKassaService:
         qty: int,
         price_rub: int,
         return_url: str | None = None,
+        receipt_email: str | None = None,
+        use_receipt: bool = False,
     ) -> YKCreateResult:
         final_return_url = return_url or self.cfg.return_url
-        payload = {
+        payload: dict[str, Any] = {
             "amount": {"value": f"{price_rub:.2f}", "currency": "RUB"},
             "capture": True,
             "confirmation": {
@@ -51,6 +53,20 @@ class YooKassaService:
                 "package_qty": qty,
             },
         }
+        if use_receipt or receipt_email:
+            payload["receipt"] = {
+                "customer": {"email": receipt_email} if receipt_email else {},
+                "items": [
+                    {
+                        "description": f"Антифрод: {qty} запросов",
+                        "amount": {"value": f"{price_rub:.2f}", "currency": "RUB"},
+                        "quantity": "1",
+                        "vat_code": 1,
+                        "payment_mode": "full_payment",
+                        "payment_subject": "service",
+                    }
+                ],
+            }
         headers = {
             "Idempotence-Key": str(uuid.uuid4()),
         }

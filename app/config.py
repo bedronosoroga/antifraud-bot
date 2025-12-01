@@ -31,6 +31,7 @@ __all__ = [
     "YooKassaConfig",
     "RUB_STARS_RATE",
     "B2B_ATI_LEADS_CHAT_ID",
+    "PAYMENT_EMAIL_ENABLED",
     "load_config",
     "cfg",
 ]
@@ -217,6 +218,7 @@ class Cfg:
     free_ttl_hours: int
     ref_hold_days: int
     allow_wallet_purchases_only_in_referrals: bool
+    payment_email_enabled: bool
     ati: AtiConfig
     yookassa: YooKassaConfig | None
 
@@ -306,6 +308,7 @@ def load_config() -> Cfg:
     free_count = env_int("FREE_COUNT", 5)
     free_ttl_hours = env_int("FREE_TTL_HOURS", 72)
     ref_hold_days = env_int("REF_HOLD_DAYS", 3)
+    payment_email_enabled = env_bool("PAYMENT_EMAIL_ENABLED", False)
 
     if lin_ok is None:
         raise RuntimeError("LIN_OK must be an integer")
@@ -350,6 +353,7 @@ def load_config() -> Cfg:
         free_ttl_hours=free_ttl_hours,
         ref_hold_days=ref_hold_days,
         allow_wallet_purchases_only_in_referrals=True,
+        payment_email_enabled=payment_email_enabled,
         ati=ati_cfg,
         b2b_leads_chat_id=b2b_leads_chat_id,
         yookassa=yookassa_cfg,
@@ -393,6 +397,7 @@ REF_WITHDRAW_FEE_PERCENT: int = 8
 COINMARKETCAP_API_KEY: str | None = env_str("COINMARKETCAP_API_KEY")
 B2B_ATI_LEADS_CHAT_ID: int | None = cfg.b2b_leads_chat_id
 RUB_STARS_RATE: float = float(env_str("RUB_STARS_RATE", "1.6") or 1.6)
+PAYMENT_EMAIL_ENABLED: bool = cfg.payment_email_enabled
 
 REQUEST_PACKAGES: list[RequestPackage] = [
     RequestPackage(qty=5, price_rub=99, unit_price_rub=19.8, discount_hint="~20 ₽/шт"),
