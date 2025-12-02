@@ -259,6 +259,24 @@ async def _grant_yk_payment_if_needed(payment: dict[str, Any]) -> tuple[int, int
     return qty, balance
 
 
+async def _revoke_yk_payment_if_needed(payment: dict[str, Any]) -> None:
+    """Rollback granted requests if payment was refunded/failed."""
+    granted = int(payment.get("granted_requests") or 0)
+    if granted <= 0:
+        return
+    quota = _get_quota_service()
+    try:
+        await quota.consume(payment["uid"], amount=granted, now=datetime.now(timezone.utc))
+    except InsufficientQuotaError:
+        # fallback: force reduce without going negative
+        try:
+            await dal.change_quota_balance(payment["uid"], -granted, source="payment_refund", allow_negative=False)
+        except Exception:
+            logging.exception("failed to rollback quota for payment %s", payment.get("id"))
+    with suppress(Exception):
+        await dal.yk_mark_granted(payment["id"], 0)
+
+
 async def _refresh_yk_status(payment: dict[str, Any]) -> dict[str, Any]:
     service = _get_yk_service()
     if service is None:
@@ -1454,6 +1472,15 @@ async def on_buy_method(query: CallbackQuery, state: FSMContext) -> None:
     method = query.data.split(":")[-1]
     if method == "stars":
         pkg = _get_package(code)
+        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        try:
+            created_today = await dal.count_payments_since(uid, day_start, provider=None)
+        except Exception:
+            created_today = 0
+            logging.exception("failed to count payments for user %s", uid)
+        if created_today >= 30:
+            await query.answer("Слишком много попыток оплаты за сегодня. Попробуйте завтра.", show_alert=True)
+            return
         # calculate stars amount: rub * rate, round up to tens, minus 1
         stars_raw = pkg.price_rub * RUB_STARS_RATE
         stars_amount = int(math.ceil(stars_raw / 10.0) * 10 - 1)
@@ -1500,6 +1527,15 @@ async def on_buy_method(query: CallbackQuery, state: FSMContext) -> None:
             await query.answer("Оплата картой временно недоступна", show_alert=True)
             return
         pkg = _get_package(code)
+        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        try:
+            created_today = await dal.count_payments_since(uid, day_start, provider=None)
+        except Exception:
+            created_today = 0
+            logging.exception("failed to count payments for user %s", uid)
+        if created_today >= 30:
+            await query.answer("Слишком много попыток оплаты за сегодня. Попробуйте завтра.", show_alert=True)
+            return
         email_to_use: str | None = None
         if cfg.payment_email_enabled:
             try:
@@ -1665,8 +1701,12 @@ async def on_successful_payment(message: Message, state: FSMContext) -> None:
         return
     if record.get("status") == "succeeded" and record.get("granted_requests", 0) > 0:
         return
+    charge_id = getattr(payment, "telegram_payment_charge_id", None)
     record["status"] = "succeeded"
     await dal.yk_update_status(payment_id, status="succeeded")
+    if charge_id:
+        with suppress(Exception):
+            await dal.yk_set_charge_id(payment_id, charge_id)
     granted, balance = await _grant_yk_payment_if_needed(record)
     with suppress(Exception):
         await referral_service.record_paid_subscription(
@@ -1680,6 +1720,54 @@ async def on_successful_payment(message: Message, state: FSMContext) -> None:
     if meta.get("chat_id") and meta.get("message_id"):
         with suppress(Exception):
             await message.bot.delete_message(meta["chat_id"], meta["message_id"])
-    text = texts.payment_success_text(granted or record.get("granted_requests", 0), balance)
+    amount_rub = record.get("package_price_rub", 0)
+    provider_label = "Telegram Stars"
+    text = (
+        f"✅ Оплата прошла ({provider_label}).\n"
+        f"Сумма: {amount_rub} ₽\n"
+        f"Начислено <b>+{granted or record.get('granted_requests', 0)}</b> запросов.\n"
+        f"<b>Доступно запросов:</b> {balance}"
+    )
     await _replace_screen(state, "buy-success")
     await message.answer(text, reply_markup=kb_payment_success())
+
+
+@router.message(F.refunded_payment)
+async def on_refunded_payment(message: Message, state: FSMContext) -> None:
+    refunded = message.refunded_payment  # type: ignore[attr-defined]
+    if not refunded:
+        return
+    charge_id = getattr(refunded, "telegram_payment_charge_id", None)
+    if not charge_id:
+        return
+    record = await dal.yk_get_payment_by_charge_id(charge_id)
+    if record is None:
+        return
+    payment_id = record.get("id")
+    provider = record.get("provider")
+    with suppress(Exception):
+        await dal.yk_mark_refunded(payment_id, source=provider)
+    # rollback quota
+    with suppress(Exception):
+        await _revoke_yk_payment_if_needed(record)
+    # refund referral locks
+    locks = []
+    with suppress(Exception):
+        locks = await dal.refund_locks_by_payment(payment_id, provider)
+    # deduct referral balances
+    for row in locks or []:
+        uid = int(row.get("uid") or 0)
+        amount = int(row.get("amount_kop") or 0)
+        if uid and amount > 0:
+            with suppress(Exception):
+                await dal.reduce_ref_balance(uid, amount)
+            with suppress(Exception):
+                await message.bot.send_message(
+                    uid, "Реферальное начисление отменено из-за возврата оплаты вашего реферала."
+                )
+    with suppress(Exception):
+        await message.bot.send_message(
+            record["uid"],
+            "Оплата была возвращена. Запросы и реферальные бонусы отменены.",
+            reply_markup=kb_payment_error(str(payment_id)),
+        )

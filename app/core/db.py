@@ -248,6 +248,11 @@ yk_payments = Table(
     Column("status", Text, nullable=False, server_default=text("'created'")),
     Column("granted_requests", Integer, nullable=False, server_default=text("0")),
     Column("notified", Boolean, nullable=False, server_default=text("false")),
+    Column("telegram_charge_id", Text, nullable=True),
+    Column("hold_until", DateTime(timezone=True), nullable=True),
+    Column("refunded", Boolean, nullable=False, server_default=text("false")),
+    Column("refunded_at", DateTime(timezone=True), nullable=True),
+    Column("refund_source", Text, nullable=True),
     Column("raw_metadata", JSONB, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
@@ -256,6 +261,7 @@ yk_payments = Table(
 Index("ix_yk_payments_status", yk_payments.c.status)
 Index("ix_yk_payments_uid", yk_payments.c.uid)
 Index("ix_yk_payments_yk_payment_id", yk_payments.c.yk_payment_id, unique=True)
+Index("ix_yk_payments_charge_id", yk_payments.c.telegram_charge_id, unique=True)
 
 quota_balances = Table(
     "quota_balances",
@@ -353,6 +359,41 @@ def _ensure_datetime_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+async def was_checked_recently(uid: int, ati: str, since: datetime) -> bool:
+    if not ATI_RE.match(ati):
+        raise ValueError("ati must be 1..7 digits")
+    since_dt = _ensure_datetime_utc(since)
+    async with Session() as session:
+        result = await session.execute(
+            select(func.count())
+            .select_from(history)
+            .where(history.c.uid == uid, history.c.ati == ati, history.c.ts >= since_dt)
+        )
+        cnt = result.scalar_one()
+        return cnt > 0
+
+
+async def count_payments_since(uid: int, since: datetime, provider: str | None = None) -> int:
+    since_dt = _ensure_datetime_utc(since)
+    async with Session() as session:
+        stmt = select(func.count()).select_from(yk_payments).where(yk_payments.c.uid == uid, yk_payments.c.created_at >= since_dt)
+        if provider:
+            stmt = stmt.where(yk_payments.c.provider == provider)
+        result = await session.execute(stmt)
+        return int(result.scalar_one() or 0)
+
+
+async def admin_audit_log(admin_uid: int, action: str, payload: Optional[dict[str, Any]] = None) -> None:
+    async with Session() as session, session.begin():
+        await session.execute(
+            text(
+                "insert into admin_audit (admin_uid, action, payload, ts) "
+                "values (:admin_uid, :action, :payload, now())"
+            ),
+            {"admin_uid": admin_uid, "action": action, "payload": payload or {}},
+        )
+
+
 async def init_db(run_migrations: bool = False, dev_create_all: bool = False) -> None:
     effective_run = run_migrations or RUN_MIGRATIONS
     effective_create_all = dev_create_all or DEV_CREATE_ALL
@@ -436,9 +477,23 @@ def _validate_email(email: str) -> str:
     trimmed = email.strip()
     if not trimmed:
         raise ValueError("email must be non-empty")
-    if "@" not in trimmed or "." not in trimmed.split("@")[-1]:
+    if " " in trimmed:
         raise ValueError("email format is invalid")
-    return trimmed
+    parts = trimmed.split("@")
+    if len(parts) != 2:
+        raise ValueError("email format is invalid")
+    local, domain = parts
+    if not local or not domain:
+        raise ValueError("email format is invalid")
+    if len(trimmed) > 254 or len(local) > 64:
+        raise ValueError("email format is invalid")
+    if "." not in domain:
+        raise ValueError("email format is invalid")
+    try:
+        domain.encode("idna")
+    except Exception:
+        raise ValueError("email format is invalid")
+    return f"{local}@{domain.lower()}"
 
 
 async def set_user_email(uid: int, email: str) -> None:
@@ -843,6 +898,7 @@ async def yk_create_payment(
             package_qty=package_qty,
             package_price_rub=package_price_rub,
             provider=provider,
+            hold_until=now_utc() + timedelta(days=30) if provider == "stars" else None,
             raw_metadata=raw_metadata,
         )
         .returning(yk_payments)
@@ -910,6 +966,32 @@ async def yk_mark_granted(payment_id: int, granted_requests: int) -> None:
         await session.execute(stmt)
 
 
+async def yk_set_charge_id(payment_id: int, charge_id: str) -> None:
+    stmt = (
+        update(yk_payments)
+        .where(yk_payments.c.id == payment_id)
+        .values(telegram_charge_id=charge_id, updated_at=now_utc())
+    )
+    async with Session() as session, session.begin():
+        await session.execute(stmt)
+
+
+async def yk_mark_refunded(payment_id: int, source: Optional[str] = None) -> None:
+    stmt = (
+        update(yk_payments)
+        .where(yk_payments.c.id == payment_id)
+        .values(
+            status="refunded",
+            refunded=True,
+            refunded_at=now_utc(),
+            refund_source=source,
+            updated_at=now_utc(),
+        )
+    )
+    async with Session() as session, session.begin():
+        await session.execute(stmt)
+
+
 async def yk_clear_confirmation_url(payment_id: int) -> None:
     stmt = (
         update(yk_payments)
@@ -942,6 +1024,14 @@ async def yk_get_payment_by_remote(yk_payment_id: str) -> Optional[dict[str, Any
     async with Session() as session:
         row = (
             await session.execute(select(yk_payments).where(yk_payments.c.yk_payment_id == yk_payment_id))
+        ).mappings().first()
+        return dict(row) if row else None
+
+
+async def yk_get_payment_by_charge_id(charge_id: str) -> Optional[dict[str, Any]]:
+    async with Session() as session:
+        row = (
+            await session.execute(select(yk_payments).where(yk_payments.c.telegram_charge_id == charge_id))
         ).mappings().first()
         return dict(row) if row else None
 

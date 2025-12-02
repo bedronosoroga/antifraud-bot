@@ -98,6 +98,16 @@ async def on_ati_code(message: Message, state: FSMContext) -> None:
         await message.answer(texts.too_many_requests())
         return
 
+    raw_input = (message.text or "").strip()
+    spinner = await message.answer(texts.ati_checking_text(raw_input))
+    code = checker.normalize_code(raw_input)
+    since_dt = now - timedelta(days=3)
+    recent = False
+    try:
+        recent = await dal.was_checked_recently(uid, code, since_dt)
+    except Exception:
+        logger.exception("failed to check recent history for uid=%s code=%s", uid, code)
+
     quota_service = bot_runtime.get_quota_service()
     is_admin = uid in cfg.admin_ids
     remaining_balance: Optional[int]
@@ -105,16 +115,12 @@ async def on_ati_code(message: Message, state: FSMContext) -> None:
         remaining_balance = None
     else:
         quota_state = await quota_service.get_state(uid)
-        if quota_state.balance <= 0:
+        if quota_state.balance <= 0 and not recent:
             await message.answer(texts.request_limit_text(), reply_markup=kb_request_no_balance())
             return
         remaining_balance = quota_state.balance
+    has_balance_flag = (remaining_balance is None) or (remaining_balance > 0) or recent
 
-    raw_input = (message.text or "").strip()
-    spinner = await message.answer(texts.ati_checking_text(raw_input))
-    has_balance_flag = remaining_balance is None or remaining_balance > 0
-
-    code = checker.normalize_code(raw_input)
     cache = bot_runtime.get_ati_code_cache()
     verifier = bot_runtime.get_ati_verifier()
     skip_ati = cache.has(code) if cache else False
@@ -137,7 +143,7 @@ async def on_ati_code(message: Message, state: FSMContext) -> None:
         return
 
     try:
-        if not is_admin:
+        if not is_admin and not recent:
             try:
                 quota_state = await quota_service.consume(uid, now=now)
             except InsufficientQuotaError:

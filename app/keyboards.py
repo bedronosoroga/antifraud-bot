@@ -185,7 +185,7 @@ def kb_referral_main(link: str) -> InlineKeyboardMarkup:
                 )
             ],
             [InlineKeyboardButton(text="✏️ Создать свою ссылку", callback_data="ref:tag")],
-            [InlineKeyboardButton(text="👥 Мои рефералы", callback_data="ref:list")],
+            [InlineKeyboardButton(text="👥 Мои приглашенные", callback_data="ref:list")],
             [InlineKeyboardButton(text="💸 Вывод средств", callback_data="ref:withdraw")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="profile:open")],
         ]

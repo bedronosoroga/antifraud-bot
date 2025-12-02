@@ -139,7 +139,8 @@ async def job_poll_yk_payments(bot: Bot | None = None) -> None:
                 if bot is not None and not payment.get("notified"):
                     balance = (await quota.get_state(payment["uid"])).balance
                     text = (
-                        f"<b>✅ Оплата прошла</b>\n\n"
+                        f"<b>✅ Оплата прошла (YooKassa)</b>\n\n"
+                        f"Сумма: {payment.get('package_price_rub', 0)} ₽\n"
                         f"Начислено <b>+{payment['package_qty']}</b> запросов.\n"
                         f"<b>Доступно запросов</b>: {balance}"
                     )
@@ -154,8 +155,22 @@ async def job_poll_yk_payments(bot: Bot | None = None) -> None:
             elif status in {"canceled", "expired", "refunded"}:
                 await dal.yk_update_status(payment["id"], status=status, raw_metadata=res.metadata)
                 if status == "refunded":
+                    # rollback quota and referrals
+                    if payment.get("granted_requests"):
+                        try:
+                            await quota.consume(payment["uid"], amount=payment["granted_requests"])
+                        except Exception:
+                            logger.exception("failed to rollback quota for refunded payment %s", payment["id"])
+                    with suppress(Exception):
+                        await dal.yk_mark_refunded(payment["id"], source="yookassa")
                     with suppress(Exception):
                         await referral_service.handle_payment_refund("yookassa", payment["id"])
+                    if bot is not None:
+                        with suppress(Exception):
+                            await bot.send_message(
+                                payment["uid"],
+                                "Оплата была возвращена. Начисленные запросы и реферальные бонусы отменены.",
+                            )
                 meta = payment.get("raw_metadata") or {}
                 if meta.get("chat_id") and meta.get("message_id") and bot is not None:
                     with suppress(Exception):
