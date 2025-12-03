@@ -177,11 +177,8 @@ async def on_ati_code(message: Message, state: FSMContext) -> None:
         report = build_report_text(code, res, _LIN_OK, _EXP_OK)
         await _edit_message(spinner, report, None)
         has_balance = (remaining_balance is None) or (remaining_balance > 0) or recent
-        if has_balance:
-            actions_keyboard = kb_after_report(has_balance=True)
-            await message.answer(texts.report_actions_text(), reply_markup=actions_keyboard)
-        else:
-            await message.answer(texts.request_limit_text(), reply_markup=kb_request_no_balance())
+        actions_keyboard = kb_after_report(has_balance=has_balance)
+        await message.answer(texts.report_actions_text(), reply_markup=actions_keyboard)
         await state.update_data({REPORT_HAS_BALANCE_KEY: has_balance})
         await _activate_report_screen(state)
         logger.info("on_ati_code success uid=%s code=%s", uid, code)
