@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from aiogram import F, Router
 from aiogram.filters import StateFilter
@@ -98,15 +98,23 @@ async def on_ati_code(message: Message, state: FSMContext) -> None:
         await message.answer(texts.too_many_requests())
         return
 
-    raw_input = (message.text or "").strip()
-    spinner = await message.answer(texts.ati_checking_text(raw_input))
-    code = checker.normalize_code(raw_input)
-    since_dt = now - timedelta(days=3)
-    recent = False
+    logger.info("on_ati_code start uid=%s raw=%s", uid, message.text)
+
     try:
-        recent = await dal.was_checked_recently(uid, code, since_dt)
+        raw_input = (message.text or "").strip()
+        spinner = await message.answer(texts.ati_checking_text(raw_input))
+        code = checker.normalize_code(raw_input)
+        since_dt = now - timedelta(days=3)
+        recent = False
+        try:
+            recent = await dal.was_checked_recently(uid, code, since_dt)
+        except Exception:
+            logger.exception("failed to check recent history for uid=%s code=%s", uid, code)
+        logger.info("recent_check uid=%s code=%s recent=%s", uid, code, recent)
     except Exception:
-        logger.exception("failed to check recent history for uid=%s code=%s", uid, code)
+        logger.exception("failed before ATI/checker uid=%s raw=%s", uid, message.text)
+        await message.answer("Не удалось выполнить проверку. Попробуйте позже.", reply_markup=kb_menu())
+        return
 
     quota_service = bot_runtime.get_quota_service()
     is_admin = uid in cfg.admin_ids
@@ -131,15 +139,18 @@ async def on_ati_code(message: Message, state: FSMContext) -> None:
         except Exception:
             logger.exception("ATI verification failed for code %s", code)
             ati_result = AtiCheckResult(status="error")
+    logger.info("ati_result uid=%s code=%s status=%s", uid, code, ati_result.status)
 
     if ati_result.status == "not_found":
         keyboard = kb_request_has_balance() if has_balance_flag else kb_request_no_balance()
         await _edit_message(spinner, texts.ati_invalid_code_text(code), keyboard)
+        logger.info("ati_result not_found uid=%s code=%s", uid, code)
         return
 
     if ati_result.status == "error":
         keyboard = kb_request_has_balance() if has_balance_flag else kb_request_no_balance()
         await _edit_message(spinner, texts.ati_no_data_or_error_text(code), keyboard)
+        logger.info("ati_result error uid=%s code=%s", uid, code)
         return
 
     try:
@@ -150,7 +161,9 @@ async def on_ati_code(message: Message, state: FSMContext) -> None:
                 await _edit_message(spinner, texts.request_limit_text(), kb_request_no_balance())
                 return
             remaining_balance = quota_state.balance
+        logger.info("checker.check uid=%s code=%s", uid, code)
         res = checker.check(code)
+        logger.info("checker done uid=%s code=%s lin=%s exp=%s risk=%s", uid, code, res.lin_index, res.exp_index, res.risk)
         report_type = choose_report_type(res, _LIN_OK, _EXP_OK)
         await dal.append_history(
             uid,
@@ -163,10 +176,15 @@ async def on_ati_code(message: Message, state: FSMContext) -> None:
         )
         report = build_report_text(code, res, _LIN_OK, _EXP_OK)
         await _edit_message(spinner, report, None)
-        has_balance = (remaining_balance is None) or (remaining_balance > 0)
-        actions_keyboard = kb_after_report(has_balance=has_balance)
-        await message.answer(texts.report_actions_text(), reply_markup=actions_keyboard)
+        has_balance = (remaining_balance is None) or (remaining_balance > 0) or recent
+        if has_balance:
+            actions_keyboard = kb_after_report(has_balance=True)
+            await message.answer(texts.report_actions_text(), reply_markup=actions_keyboard)
+        else:
+            await message.answer(texts.request_limit_text(), reply_markup=kb_request_no_balance())
         await state.update_data({REPORT_HAS_BALANCE_KEY: has_balance})
         await _activate_report_screen(state)
+        logger.info("on_ati_code success uid=%s code=%s", uid, code)
     except Exception:
+        logger.exception("failed to process ati code %s for uid %s", code, uid)
         await _edit_message(spinner, "Не удалось выполнить проверку. Попробуйте ещё раз.", kb_menu())
