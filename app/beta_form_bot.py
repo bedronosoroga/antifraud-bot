@@ -5,6 +5,8 @@ import logging
 import os
 import sqlite3
 import json
+import csv
+import tempfile
 from sqlalchemy.exc import IntegrityError
 from pathlib import Path
 from typing import Any, Optional
@@ -21,6 +23,7 @@ from aiogram.types import (
     Message,
     ChatJoinRequest,
     ForceReply,
+    FSInputFile,
 )
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -55,6 +58,12 @@ from app.beta.activity import (
     get_history_stats,
     now_utc,
 )
+from sqlalchemy import select, func
+try:
+    from openpyxl import Workbook
+except ImportError:
+    Workbook = None
+from datetime import time, timedelta
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("beta_form_bot")
@@ -266,7 +275,13 @@ async def on_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     if _is_admin(message):
         await message.answer(
-            "Админ панель:\n/review — просмотреть заявки\n/send_approvals — разослать одобренным\n/send_rejects — разослать отказ",
+            "Админ панель:\n"
+            "/review — просмотреть заявки\n"
+            "/send_approvals — разослать одобренным\n"
+            "/send_rejects — разослать отказ\n"
+            "/beta_stats — сводка по тестерам\n"
+            "/beta_sleepers — список «спящих»\n"
+            "/beta_export — выгрузка .xlsx",
             reply_markup=None,
         )
         return
@@ -676,6 +691,38 @@ def _set_granted(rec_id: int, qty: int) -> None:
     _update_submission(rec_id, granted=1, granted_qty=qty)
 
 
+def _approved_submissions() -> list[dict[str, Any]]:
+    conn = _get_conn()
+    cur = conn.execute("SELECT uid, username FROM submissions WHERE status='approved'")
+    res = []
+    for row in cur.fetchall():
+        uid = row["uid"]
+        if uid is None:
+            continue
+        res.append({"uid": int(uid), "username": row["username"]})
+    return res
+
+
+def _approved_uids() -> list[int]:
+    return [rec["uid"] for rec in _approved_submissions()]
+
+
+def _user_link(uid: int, username: Optional[str]) -> str:
+    link = f"tg://user?id={uid}"
+    text = f"@{username}" if username else str(uid)
+    return f'<a href="{link}">{text}</a>'
+
+
+def _naive(dt_val):
+    if dt_val is None:
+        return None
+    if isinstance(dt_val, datetime):
+        if dt_val.tzinfo is not None:
+            return dt_val.replace(tzinfo=None)
+        return dt_val
+    return dt_val
+
+
 async def main() -> None:
     global quota_service
     _init_db()
@@ -854,6 +901,185 @@ async def on_reminder_off(query: CallbackQuery) -> None:
         return
     mark_inactive(uid)
     await query.answer("Ок, больше не будем напоминать", show_alert=False)
+
+
+async def _agg_checks(uids: list[int], since: Optional[datetime] = None) -> dict[int, dict[str, Any]]:
+    if not uids:
+        return {}
+    async with dal.Session() as session:
+        stmt = select(
+            dal.history.c.uid,
+            func.count(dal.history.c.id).label("cnt"),
+            func.max(dal.history.c.ts).label("last_ts"),
+        ).where(dal.history.c.uid.in_(uids))
+        if since is not None:
+            stmt = stmt.where(dal.history.c.ts >= since)
+        stmt = stmt.group_by(dal.history.c.uid)
+        result = await session.execute(stmt)
+        data = {}
+        for row in result:
+            data[int(row.uid)] = {"cnt": int(row.cnt or 0), "last_ts": row.last_ts}
+        return data
+
+
+def _start_of_today_msk() -> datetime:
+    tz = timezone(timedelta(hours=3))
+    today = datetime.now(tz).date()
+    start_local = datetime.combine(today, time(0, 0), tzinfo=tz)
+    return start_local.astimezone(timezone.utc)
+
+
+@router.message(Command("beta_stats"))
+async def on_beta_stats(message: Message) -> None:
+    if not _is_admin(message):
+        await message.answer("Нет доступа")
+        return
+    subs = _approved_submissions()
+    uids = [rec["uid"] for rec in subs]
+    uname_map = {rec["uid"]: rec.get("username") for rec in subs}
+    if not uids:
+        await message.answer("Нет одобренных тестеров.")
+        return
+    stats_all = await _agg_checks(uids)
+    stats_today = await _agg_checks(uids, since=_start_of_today_msk())
+
+    total = len(uids)
+    checks_map = {uid: info["cnt"] for uid, info in stats_all.items()}
+    active1 = sum(1 for uid in uids if checks_map.get(uid, 0) >= 1)
+    active5 = sum(1 for uid in uids if checks_map.get(uid, 0) >= 5)
+    zero = sum(1 for uid in uids if checks_map.get(uid, 0) == 0)
+    avg_checks = (sum(checks_map.values()) / active1) if active1 > 0 else 0
+
+    today_total = sum(stats_today[uid]["cnt"] for uid in stats_today)
+
+    top = sorted(checks_map.items(), key=lambda x: x[1], reverse=True)[:10]
+    top_lines = []
+    for uid, cnt in top:
+        top_lines.append(f"{_user_link(uid, uname_map.get(uid))} (uid {uid}): {cnt}")
+
+    text = (
+        "<b>Статистика беты</b>\n"
+        f"Всего одобрено: {total}\n"
+        f"Сделали ≥1 проверку: {active1}\n"
+        f"Сделали ≥5 проверок: {active5}\n"
+        f"Не сделали ни одной: {zero}\n"
+        f"Среднее проверок на активного: {avg_checks:.2f}\n"
+        f"Проверок сегодня (MSK): {today_total}\n\n"
+        "<b>Топ-10 по проверкам</b>\n"
+        + ("\n".join(top_lines) if top_lines else "—")
+    )
+    await message.answer(text)
+
+
+@router.message(Command("beta_sleepers"))
+async def on_beta_sleepers(message: Message) -> None:
+    if not _is_admin(message):
+        await message.answer("Нет доступа")
+        return
+    subs = _approved_submissions()
+    uids = [rec["uid"] for rec in subs]
+    uname_map = {rec["uid"]: rec.get("username") for rec in subs}
+    if not uids:
+        await message.answer("Нет одобренных тестеров.")
+        return
+    stats_all = await _agg_checks(uids)
+    now = now_utc()
+    sleepers = []
+    for uid in uids:
+        info = stats_all.get(uid, {"cnt": 0, "last_ts": None})
+        cnt = info["cnt"]
+        last_ts = info["last_ts"]
+        if cnt == 0:
+            sleepers.append((uid, cnt, last_ts))
+        else:
+            if last_ts and (now - last_ts).total_seconds() >= 48 * 3600:
+                sleepers.append((uid, cnt, last_ts))
+    if not sleepers:
+        await message.answer("Нет спящих тестеров.")
+        return
+    lines = []
+    for uid, cnt, last_ts in sleepers:
+        ts_text = last_ts.isoformat() if last_ts else "—"
+        lines.append(f"{_user_link(uid, uname_map.get(uid))} (uid {uid}), checks={cnt}, last={ts_text}")
+    await message.answer("<b>Слиперы</b>\n" + "\n".join(lines))
+
+
+@router.message(Command("beta_export"))
+async def on_beta_export(message: Message) -> None:
+    if not _is_admin(message):
+        await message.answer("Нет доступа")
+        return
+    if Workbook is None:
+        await message.answer("Для экспорта нужен openpyxl. Установите пакет и перезапустите бота.")
+        return
+    subs = _approved_submissions()
+    if not subs:
+        await message.answer("Нет данных для экспорта.")
+        return
+    uids = [rec["uid"] for rec in subs]
+    uname_map = {rec["uid"]: rec.get("username") for rec in subs}
+    stats_all = await _agg_checks(uids)
+    stats_today = await _agg_checks(uids, since=_start_of_today_msk())
+    # convert rows to dict to avoid Row.get issues
+    activity_map = {}
+    for row in get_activity_rows():
+        activity_map[row["uid"]] = {k: row[k] for k in row.keys()}
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "beta_stats"
+    headers = [
+        "uid",
+        "username",
+        "tg_link",
+        "total_checks",
+        "checks_today",
+        "first_check",
+        "last_check",
+        "first_start_at",
+        "reminder_start_sent",
+        "reminder_3h_sent",
+        "reminder_24_sent_at",
+        "reminder_24_count",
+        "reminder_48_sent_at",
+        "inactive",
+    ]
+    ws.append(headers)
+
+    for uid in uids:
+        total = stats_all.get(uid, {}).get("cnt", 0)
+        today = stats_today.get(uid, {}).get("cnt", 0)
+        _, first_check, last_check = await get_history_stats(uid)
+        act = activity_map.get(uid, {})
+        ws.append(
+            [
+                uid,
+                uname_map.get(uid),
+                f"https://t.me/{uname_map.get(uid)}" if uname_map.get(uid) else f"tg://user?id={uid}",
+                total,
+                today,
+                _naive(first_check),
+                _naive(last_check),
+                _naive(act.get("first_start_at")),
+                bool(act.get("reminder_start_sent")),
+                bool(act.get("reminder_3h_sent")),
+                _naive(act.get("reminder_24_sent_at")),
+                act.get("reminder_24_count"),
+                _naive(act.get("reminder_48_sent_at")),
+                bool(act.get("inactive")),
+            ]
+        )
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+        wb.save(tmp.name)
+        tmp_path = tmp.name
+    try:
+        await message.answer_document(FSInputFile(tmp_path, filename="beta_stats.xlsx"))
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
 
 
 def _kb_review(rec_id: int, next_id: Optional[int]) -> InlineKeyboardMarkup:
