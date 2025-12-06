@@ -33,6 +33,7 @@ from app.bot.handlers_numeric import (
     init_checks_runtime,
 )
 from app.bot import runtime as bot_runtime
+from app.beta.gate_router import router as beta_gate_router
 
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -174,6 +175,8 @@ async def _main() -> None:
     ctx = AppContext(bot=bot, dp=dp)
     dp["ctx"] = ctx
 
+    # бета-гейт ставим первым: при BETA_ONLY он пропустит только whitelisted UID
+    dp.include_router(beta_gate_router)
     dp.include_router(public_router)
     dp.include_router(numeric_router)
 
