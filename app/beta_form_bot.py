@@ -1189,18 +1189,35 @@ async def _maybe_send_surveys(bot: Bot, activity_rows: list[sqlite3.Row], now: d
             try:
                 first_dt = datetime.fromisoformat(first_start)
             except Exception:
+                logger.warning("cannot parse first_start_at for uid=%s raw=%s", uid, first_start)
                 first_dt = None
         elif isinstance(first_start, datetime):
             first_dt = first_start
         if first_dt is None:
+            logger.debug("skip survey scheduling: no first_dt uid=%s", uid)
             continue
+        if first_dt.tzinfo is None:
+            logger.warning("first_start_at is naive, assuming UTC uid=%s raw=%s", uid, first_start)
+            first_dt = first_dt.replace(tzinfo=timezone.utc)
         # mid
-        if not _get_survey(uid, "mid", statuses={"sent", "answered"}) and (now - first_dt).total_seconds() >= SURVEY_MID_DELAY_HOURS * 3600:
+        try:
+            delta_sec = (now - first_dt).total_seconds()
+        except Exception:
+            logger.exception(
+                "failed to compute delta for surveys uid=%s now=%s first_dt=%s",
+                uid,
+                now,
+                first_dt,
+            )
+            continue
+        if not _get_survey(uid, "mid", statuses={"sent", "answered"}) and delta_sec >= SURVEY_MID_DELAY_HOURS * 3600:
+            logger.info("auto-sending mid survey uid=%s delta_hours=%.2f", uid, delta_sec / 3600)
             await _start_survey(bot, uid, "mid")
             sent_mid.append(uid)
             continue  # чтобы не наваливать сразу финальный
         # final
-        if not _get_survey(uid, "final", statuses={"sent", "answered"}) and (now - first_dt).total_seconds() >= SURVEY_FINAL_DELAY_HOURS * 3600:
+        if not _get_survey(uid, "final", statuses={"sent", "answered"}) and delta_sec >= SURVEY_FINAL_DELAY_HOURS * 3600:
+            logger.info("auto-sending final survey uid=%s delta_hours=%.2f", uid, delta_sec / 3600)
             await _start_survey(bot, uid, "final")
             sent_final.append(uid)
     if sent_mid or sent_final:
@@ -1228,14 +1245,19 @@ async def _run_reminders(bot: Bot) -> None:
         if val is None:
             return None
         if isinstance(val, datetime):
+            if val.tzinfo is None:
+                logger.warning("reminder datetime is naive, assuming UTC val=%s", val)
+                return val.replace(tzinfo=timezone.utc)
             return val
         if isinstance(val, str):
             try:
                 dt = datetime.fromisoformat(val)
                 if dt.tzinfo is None:
+                    logger.warning("reminder datetime string is naive, assuming UTC raw=%s", val)
                     dt = dt.replace(tzinfo=timezone.utc)
                 return dt
             except Exception:
+                logger.warning("failed to parse datetime string raw=%s", val)
                 return None
         return None
 
@@ -1262,7 +1284,11 @@ async def _run_reminders(bot: Bot) -> None:
 
         # 3 часа без проверок
         if first_start and not reminder_3h_sent and total_checks == 0:
-            delta_minutes = (now - first_start).total_seconds() / 60
+            try:
+                delta_minutes = (now - first_start).total_seconds() / 60
+            except Exception:
+                logger.exception("delta calc failed (3h) uid=%s now=%s first=%s", uid, now, first_start)
+                delta_minutes = None
             if delta_minutes >= 180:
                 kb = InlineKeyboardMarkup(
                     inline_keyboard=[
@@ -1275,7 +1301,11 @@ async def _run_reminders(bot: Bot) -> None:
         # 24 часа без новых проверок (шлём даже если проверок не было)
         anchor_24 = last_check or first_start
         if anchor_24 and reminder_24_count < REMINDER_24_MAX:
-            delta_minutes = (now - anchor_24).total_seconds() / 60
+            try:
+                delta_minutes = (now - anchor_24).total_seconds() / 60
+            except Exception:
+                logger.exception("delta calc failed (24h) uid=%s now=%s anchor=%s", uid, now, anchor_24)
+                delta_minutes = None
             if delta_minutes >= 1440:
                 if reminder_24_sent_at is None or (now - reminder_24_sent_at).total_seconds() >= 1440 * 60:
                     kb = InlineKeyboardMarkup(
@@ -1289,7 +1319,11 @@ async def _run_reminders(bot: Bot) -> None:
         # 48 часов без активности (шлём даже если проверок не было)
         anchor = last_check or first_start
         if anchor:
-            delta_minutes = (now - anchor).total_seconds() / 60
+            try:
+                delta_minutes = (now - anchor).total_seconds() / 60
+            except Exception:
+                logger.exception("delta calc failed (48h) uid=%s now=%s anchor=%s", uid, now, anchor)
+                delta_minutes = None
             if delta_minutes >= 2880:
                 if reminder_48_sent_at is None or (now - reminder_48_sent_at).total_seconds() >= 2880 * 60:
                     kb = InlineKeyboardMarkup(
