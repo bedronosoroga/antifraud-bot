@@ -1169,7 +1169,7 @@ def _format_for_admin(rec: dict[str, Any]) -> str:
 # --- Reminder scheduler ----------------------------------------------------
 
 
-REMINDER_SCAN_SEC = int(os.getenv("REMINDER_SCAN_SEC", "600") or 600)
+REMINDER_SCAN_SEC = int(os.getenv("REMINDER_SCAN_SEC", "60") or 60)
 REMINDER_24_MAX = int(os.getenv("REMINDER_24_MAX", "3") or 3)
 
 
