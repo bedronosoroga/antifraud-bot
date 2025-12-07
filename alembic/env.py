@@ -24,7 +24,7 @@ def _sync_url(url: str) -> str:
 def get_url() -> str:
     url = os.getenv("DATABASE_URL")
     if not url:
-        url = "postgresql+asyncpg://antifraud:  @127.0.0.1:5433/antifraud"
+        url = "postgresql+asyncpg://antifraud:  @127.0.0.1:5432/antifraud"
     return _sync_url(url)
 
 
