@@ -64,6 +64,7 @@ try:
 except ImportError:
     Workbook = None
 from datetime import time, timedelta
+from functools import lru_cache
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("beta_form_bot")
@@ -108,6 +109,269 @@ BTN = InlineKeyboardButton
 
 def _kb(rows):
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _notify_admins(bot: Bot, text: str) -> None:
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text)
+        except Exception:
+            continue
+
+
+# --- Survey definitions ----------------------------------------------------
+
+# Интервалы рассылки опросов
+SURVEY_MID_DELAY_HOURS = 72
+SURVEY_FINAL_DELAY_HOURS = 168
+
+SURVEY_QUESTIONS = {
+    "mid": [
+        {
+            "code": "m1",
+            "text": "1️⃣ <b>Насколько вам было легко разобраться с ботом в первый раз?</b>\n\nОцените по шкале, где 1 — совсем непонятно, 5 — всё просто.",
+            "type": "scale5",
+            "labels": ["1", "2", "3", "4", "5"],
+            "required": True,
+        },
+        {
+            "code": "m2",
+            "text": "2️⃣ <b>Насколько понятен сам результат проверки?</b>\n\nПонимаете ли вы, что означают индексы и вывод по рискам?\nОцените по шкале, где 1 — ничего не понял(а), 5 — всё понятно.",
+            "type": "scale5",
+            "labels": ["1", "2", "3", "4", "5"],
+            "required": True,
+        },
+        {
+            "code": "m3",
+            "text": "3️⃣ <b>Как бот работает по скорости?</b>",
+            "type": "options",
+            "options": ["Очень быстро", "Нормально", "Медленно, иногда раздражает"],
+            "required": True,
+        },
+        {
+            "code": "m4",
+            "text": "4️⃣ <b>Вы уже успели применить бот в реальной задаче?</b>\n\nНе тест, а живой контрагент / конкретная сделка.",
+            "type": "options",
+            "options": ["Да, использую в работе", "Пока только пробовал(а)", "Ещё не успел(а)"],
+            "required": True,
+        },
+        {
+            "code": "m4_extra",
+            "text": "4️⃣ <b>Если хотите, напишите 1–2 фразы:</b>\n\nВ каких ситуациях бот оказался полезен / не помог.",
+            "type": "text_optional",
+            "required": False,
+        },
+        {
+            "code": "m5",
+            "text": "5️⃣ <b>Что в боте было непонятнее всего за эти дни?</b>\n\nНапример: формулировка, кнопка, раздел, результат.\nЕсли нечего вспомнить — так и напишите: «без сложностей».",
+            "type": "text",
+            "required": True,
+        },
+        {
+            "code": "m6",
+            "text": "6️⃣ <b>Если бы можно было исправить только одну вещь — что бы выбрали?</b>",
+            "type": "text_optional",
+            "required": False,
+        },
+    ],
+    "final": [
+        {
+            "code": "f1",
+            "text": "1️⃣ <b>Насколько в целом вам зашёл бот?</b>\n\nОцените по шкале, где 1 — совсем не зашёл, 5 — очень нравится.",
+            "type": "scale5",
+            "labels": ["1", "2", "3", "4", "5"],
+            "required": True,
+        },
+        {
+            "code": "f2",
+            "text": "2️⃣ <b>Насколько бот полезен именно в вашей работе?</b>",
+            "type": "options",
+            "options": ["Очень помогает, буду пользоваться", "Иногда полезен, но не критично", "Пока не чувствую реальной пользы"],
+            "required": True,
+        },
+        {
+            "code": "f2_extra",
+            "text": "2️⃣ <b>Если есть пример, когда бот помог или не помог — напишите пару слов.</b>",
+            "type": "text_optional",
+            "required": False,
+        },
+        {
+            "code": "f3",
+            "text": "3️⃣ <b>Насколько понятно, что означают индексы и уровни риска?</b>\n\nОцените по шкале, где 1 — совсем не понятно, 5 — всё ясно.",
+            "type": "scale5",
+            "labels": ["1", "2", "3", "4", "5"],
+            "required": True,
+        },
+        {
+            "code": "f3_extra",
+            "text": "3️⃣ <b>Что именно сбивает с толку?</b>\n\nНапример: «не понимаю, что считать хорошим индексом», «незапомнились уровни риска» и т. д.",
+            "type": "text_optional",
+            "required": False,
+        },
+        {
+            "code": "f4",
+            "text": "4️⃣ <b>Читали ли вы раздел про методику расчёта индексов?</b>",
+            "type": "options",
+            "options": ["Да, читал(а) внимательно", "Пробежался(ась) по диагонали", "Нет, не открывал(а)"],
+            "required": True,
+        },
+        {
+            "code": "f4_rate",
+            "text": "4️⃣ <b>Насколько понятным оказался текст про методику и откуда берутся индексы?</b>\n\nОцените по пятибальной шкале, где 1 — ничего не понял(а), 5 — всё понятно.",
+            "type": "scale5",
+            "labels": ["1", "2", "3", "4", "5"],
+            "required": False,
+        },
+        {
+            "code": "f4_extra",
+            "text": "4️⃣ <b>Что бы вы упростили или переформулировали в этом разделе?</b>\n\nМожно указать фразу или блок.",
+            "type": "text_optional",
+            "required": False,
+        },
+        {
+            "code": "f5",
+            "text": "5️⃣ <b>Насколько удобно пользоваться ботом в целом?</b>",
+            "type": "options",
+            "options": ["Очень удобно, всё логично", "В целом нормально, но есть шероховатости", "Скорее неудобно, часто путаюсь"],
+            "required": True,
+        },
+        {
+            "code": "f5_extra",
+            "text": "5️⃣ <b>Если есть, напишите, какие шаги или кнопки кажутся лишними или запутанными.</b>",
+            "type": "text_optional",
+            "required": False,
+        },
+        {
+            "code": "f6",
+            "text": "6️⃣ <b>Что в боте вам больше всего понравилось?</b>\n\n1–2 пункта.",
+            "type": "text_optional",
+            "required": False,
+        },
+        {
+            "code": "f6b",
+            "text": "6️⃣ <b>Что показалось лишним или раздражающим?</b>",
+            "type": "text_optional",
+            "required": False,
+        },
+        {
+            "code": "f7",
+            "text": "7️⃣ <b>Если хотите — напишите всё, что ещё важно сказать.</b>\n\nЛюбые мысли, идеи, предложения.",
+            "type": "text_optional",
+            "required": False,
+        },
+    ],
+}
+
+
+@lru_cache(maxsize=None)
+def _survey_steps(kind: str) -> list[dict[str, Any]]:
+    return SURVEY_QUESTIONS.get(kind, [])
+
+
+def _survey_step(kind: str, code: str) -> Optional[dict[str, Any]]:
+    for step in _survey_steps(kind):
+        if step["code"] == code:
+            return step
+    return None
+
+
+def _survey_first(kind: str) -> Optional[str]:
+    steps = _survey_steps(kind)
+    return steps[0]["code"] if steps else None
+
+
+def _survey_next(kind: str, current: Optional[str], answers: dict[str, Any]) -> Optional[str]:
+    steps = _survey_steps(kind)
+    if current is None:
+        return steps[0]["code"] if steps else None
+    codes = [s["code"] for s in steps]
+    # conditional skips
+    if kind == "mid" and current == "m4":
+        val = answers.get("m4", "")
+        if val == "Ещё не успел(а)":
+            # пропускаем m4_extra
+            try:
+                idx = codes.index("m4_extra")
+                next_code = codes[idx + 1] if idx + 1 < len(codes) else None
+                return next_code
+            except ValueError:
+                pass
+        else:
+            return "m4_extra"
+    if kind == "final" and current == "f3":
+        val = answers.get("f3", "")
+        if val in {"4", "5"}:
+            # пропускаем уточняющий текст
+            try:
+                idx = codes.index("f3_extra")
+                next_code = codes[idx + 1] if idx + 1 < len(codes) else None
+                return next_code
+            except ValueError:
+                pass
+    if kind == "final" and current == "f4":
+        val = answers.get("f4", "")
+        if val == "Нет, не открывал(а)":
+            return "f4_extra"  # спрашиваем только открытый вопрос, без оценки текста
+    try:
+        idx = codes.index(current)
+    except ValueError:
+        return None
+    if idx + 1 < len(steps):
+        return steps[idx + 1]["code"]
+    return None
+
+
+def _survey_kb(kind: str, code: str, step: dict[str, Any]) -> Optional[InlineKeyboardMarkup]:
+    buttons: list[list[InlineKeyboardButton]] = []
+    if step["type"] == "scale5":
+        btns = []
+        labels = step.get("labels") or ["1", "2", "3", "4", "5"]
+        for idx, lab in enumerate(labels):
+            btns.append(InlineKeyboardButton(text=lab, callback_data=f"sv:{kind}:{code}:{idx}"))
+        buttons.append(btns)
+    elif step["type"] == "options":
+        opts = step.get("options", [])
+        for idx, opt in enumerate(opts):
+            buttons.append([InlineKeyboardButton(text=opt, callback_data=f"sv:{kind}:{code}:{idx}")])
+    elif step["type"] == "text_optional":
+        buttons.append([InlineKeyboardButton(text="Пропустить", callback_data=f"svskip:{kind}:{code}")])
+    if not buttons:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def _send_survey_step(bot: Bot, uid: int, kind: str, code: str, answers: dict[str, Any]) -> int:
+    step = _survey_step(kind, code)
+    if not step:
+        return 0
+    text = step["text"]
+    kb = _survey_kb(kind, code, step)
+    force_new_msg = True  # в опросах всегда создаём новое, старое удаляем при ответе
+    markup = None
+    if step["type"] in {"text", "text_optional"}:
+        markup = ForceReply(selective=False)
+    msg = await bot.send_message(uid, text, reply_markup=kb or markup)
+    _set_survey_state(uid, kind, current_step=code, message_id=msg.message_id)
+    return msg.message_id
+
+
+async def _start_survey(bot: Bot, uid: int, kind: str) -> bool:
+    existing = _get_survey(uid, kind)
+    if existing and existing["status"] == "answered":
+        return False
+    first = _survey_first(kind)
+    if not first:
+        return False
+    _create_survey(uid, kind, status="sent", step=first, message_id=None)
+    if kind == "mid":
+        intro = "👋 <b>Небольшой опрос на пару минут</b>\n\nПоможет понять, что в боте доработать в первую очередь."
+    else:
+        intro = "📄 <b>Финальный опрос по тестированию</b>\n\n5-7 вопросов, чтобы понять, куда двигать продукт дальше."
+    intro_msg = await bot.send_message(uid, intro)
+    # сохраним intro id в answers служебно
+    _set_survey_state(uid, kind, answers={"_intro_msg": intro_msg.message_id})
+    await _send_survey_step(bot, uid, kind, first, {})
+    return True
 
 
 def kb_start():
@@ -281,7 +545,10 @@ async def on_start(message: Message, state: FSMContext) -> None:
             "/send_rejects — разослать отказ\n"
             "/beta_stats — сводка по тестерам\n"
             "/beta_sleepers — список «спящих»\n"
-            "/beta_export — выгрузка .xlsx",
+            "/beta_export — выгрузка .xlsx\n"
+            "/survey_mid — отправить mid-опрос\n"
+            "/survey_final — отправить финальный опрос\n"
+            "/survey_stats — сводка по опросам",
             reply_markup=None,
         )
         return
@@ -389,6 +656,12 @@ async def on_q5extra_skip(query: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(F.text, ~F.text.regexp(r"^/"))
 async def on_text_answers(message: Message, state: FSMContext) -> None:
+    # если активен mid/final опрос — обрабатываем его и выходим
+    if message.from_user:
+        active = _active_survey(message.from_user.id)
+        if active:
+            await on_survey_text(message, state)
+            return
     data = await state.get_data()
     step = data.get("beta_step")
     if step not in {"q5_extra", "q6", "q9"}:
@@ -604,6 +877,24 @@ def _init_db() -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS beta_surveys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uid INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            status TEXT DEFAULT 'sent', -- sent | answered | skipped | expired
+            answers TEXT,
+            current_step TEXT,
+            message_id INTEGER,
+            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            answered_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(uid, kind)
+        )
+        """
+    )
     conn.commit()
 
 
@@ -713,14 +1004,93 @@ def _user_link(uid: int, username: Optional[str]) -> str:
     return f'<a href="{link}">{text}</a>'
 
 
-def _naive(dt_val):
-    if dt_val is None:
+def _as_dt(val):
+    if val is None:
         return None
-    if isinstance(dt_val, datetime):
-        if dt_val.tzinfo is not None:
-            return dt_val.replace(tzinfo=None)
-        return dt_val
-    return dt_val
+    dt = None
+    if isinstance(val, datetime):
+        dt = val
+    elif isinstance(val, str):
+        try:
+            dt = datetime.fromisoformat(val)
+        except Exception:
+            try:
+                if val.endswith("Z"):
+                    dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+            except Exception:
+                dt = None
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+# --- Surveys storage ------------------------------------------------------
+
+
+def _get_survey(uid: int, kind: str, statuses: Optional[set[str]] = None) -> Optional[dict[str, Any]]:
+    conn = _get_conn()
+    if statuses:
+        placeholders = ",".join(["?"] * len(statuses))
+        params = list(statuses) + [uid, kind]
+        cur = conn.execute(
+            f"SELECT * FROM beta_surveys WHERE status IN ({placeholders}) AND uid=? AND kind=? LIMIT 1",
+            params,
+        )
+    else:
+        cur = conn.execute("SELECT * FROM beta_surveys WHERE uid=? AND kind=? LIMIT 1", (uid, kind))
+    row = cur.fetchone()
+    if not row:
+        return None
+    answers = row["answers"]
+    try:
+        answers = json.loads(answers) if answers else {}
+    except Exception:
+        answers = {}
+    return {
+        "id": row["id"],
+        "uid": row["uid"],
+        "kind": row["kind"],
+        "status": row["status"],
+        "answers": answers,
+        "current_step": row["current_step"],
+        "message_id": row["message_id"],
+        "sent_at": row["sent_at"],
+        "answered_at": row["answered_at"],
+    }
+
+
+def _create_survey(uid: int, kind: str, status: str = "sent", step: str | None = None, message_id: int | None = None) -> int:
+    conn = _get_conn()
+    cur = conn.execute(
+        """
+        INSERT INTO beta_surveys (uid, kind, status, current_step, message_id)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(uid, kind) DO UPDATE SET status=excluded.status, current_step=excluded.current_step, message_id=excluded.message_id, sent_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+        """,
+        (uid, kind, status, step, message_id),
+    )
+    conn.commit()
+    return cur.lastrowid or conn.execute("SELECT id FROM beta_surveys WHERE uid=? AND kind=?", (uid, kind)).fetchone()[0]
+
+
+def _set_survey_state(uid: int, kind: str, **fields: Any) -> None:
+    if not fields:
+        return
+    conn = _get_conn()
+    sets = ", ".join([f"{k}=?" for k in fields.keys()])
+    values = [json.dumps(v, ensure_ascii=False) if k == "answers" else v for k, v in fields.items()]
+    values.extend([uid, kind])
+    conn.execute(
+        f"UPDATE beta_surveys SET {sets}, updated_at=CURRENT_TIMESTAMP WHERE uid=? AND kind=?",
+        values,
+    )
+    conn.commit()
+
+
+def _active_survey(uid: int) -> Optional[dict[str, Any]]:
+    return _get_survey(uid, kind="mid", statuses={"sent"}) or _get_survey(uid, kind="final", statuses={"sent"})
 
 
 async def main() -> None:
@@ -803,6 +1173,43 @@ REMINDER_SCAN_SEC = int(os.getenv("REMINDER_SCAN_SEC", "600") or 600)
 REMINDER_24_MAX = int(os.getenv("REMINDER_24_MAX", "3") or 3)
 
 
+async def _maybe_send_surveys(bot: Bot, activity_rows: list[sqlite3.Row], now: datetime) -> None:
+    # авто-отправка mid/final по времени
+    by_uid = {row["uid"]: row for row in activity_rows}
+    approved = _approved_uids()
+    sent_mid = []
+    sent_final = []
+    for uid in approved:
+        row = by_uid.get(uid)
+        if not row:
+            continue
+        first_start = row["first_start_at"]
+        first_dt = None
+        if isinstance(first_start, str):
+            try:
+                first_dt = datetime.fromisoformat(first_start)
+            except Exception:
+                first_dt = None
+        elif isinstance(first_start, datetime):
+            first_dt = first_start
+        if first_dt is None:
+            continue
+        # mid
+        if not _get_survey(uid, "mid", statuses={"sent", "answered"}) and (now - first_dt).total_seconds() >= SURVEY_MID_DELAY_HOURS * 3600:
+            await _start_survey(bot, uid, "mid")
+            sent_mid.append(uid)
+            continue  # чтобы не наваливать сразу финальный
+        # final
+        if not _get_survey(uid, "final", statuses={"sent", "answered"}) and (now - first_dt).total_seconds() >= SURVEY_FINAL_DELAY_HOURS * 3600:
+            await _start_survey(bot, uid, "final")
+            sent_final.append(uid)
+    if sent_mid or sent_final:
+        await _notify_admins(
+            bot,
+            f"Опросы разосланы автоматически: mid={len(sent_mid)}, final={len(sent_final)}.",
+        )
+
+
 async def reminders_loop(bot: Bot) -> None:
     while True:
         try:
@@ -815,6 +1222,7 @@ async def reminders_loop(bot: Bot) -> None:
 async def _run_reminders(bot: Bot) -> None:
     now = now_utc()
     rows = get_activity_rows()
+    await _maybe_send_surveys(bot, rows, now)
 
     def _as_dt(val):
         if val is None:
@@ -834,6 +1242,9 @@ async def _run_reminders(bot: Bot) -> None:
     for row in rows:
         uid = row["uid"]
         if row["inactive"]:
+            continue
+        if _active_survey(uid):
+            # не отвлекаем напоминаниями, если пользователь в процессе опроса
             continue
         first_start = _as_dt(row["first_start_at"])
         reminder_start_sent = bool(row["reminder_start_sent"])
@@ -901,6 +1312,142 @@ async def on_reminder_off(query: CallbackQuery) -> None:
         return
     mark_inactive(uid)
     await query.answer("Ок, больше не будем напоминать", show_alert=False)
+
+
+# --- Survey handlers ------------------------------------------------------
+
+
+def _survey_expected(uid: int) -> Optional[dict[str, Any]]:
+    s = _active_survey(uid)
+    return s
+
+
+def _survey_store_answer(uid: int, kind: str, code: str, value: Any, base_answers: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    survey = _get_survey(uid, kind, statuses={"sent"})
+    answers = base_answers if base_answers is not None else (survey["answers"] if survey else {})
+    answers[code] = value
+    _set_survey_state(uid, kind, answers=answers)
+    return answers
+
+
+async def _advance_survey(bot: Bot, uid: int, kind: str, current: str, answers: dict[str, Any]) -> None:
+    next_code = _survey_next(kind, current, answers)
+    if next_code:
+        await _send_survey_step(bot, uid, kind, next_code, answers)
+        return
+    _set_survey_state(
+        uid,
+        kind,
+        status="answered",
+        answered_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        current_step=None,
+    )
+    await bot.send_message(uid, "✅ Спасибо, ответы сохранены.")
+
+
+@router.callback_query(F.data.startswith("sv:"))
+async def on_survey_choice(query: CallbackQuery) -> None:
+    parts = (query.data or "").split(":")
+    if len(parts) != 4:
+        await query.answer()
+        return
+    _, kind, code, idx_raw = parts
+    uid = query.from_user.id
+    survey = _get_survey(uid, kind, statuses={"sent"})
+    if not survey or survey.get("current_step") != code:
+        await query.answer()
+        return
+    # удалить предыдущее сообщение с вопросом и интро, если ещё не удалено
+    answers = survey.get("answers") or {}
+    intro_id = answers.pop("_intro_msg", None)
+    try:
+        msg_id = survey.get("message_id")
+        if msg_id:
+            await query.bot.delete_message(query.message.chat.id, msg_id)
+    except Exception:
+        pass
+    if intro_id:
+        try:
+            await query.bot.delete_message(query.message.chat.id, intro_id)
+        except Exception:
+            pass
+    step = _survey_step(kind, code)
+    if not step:
+        await query.answer()
+        return
+    opts = step.get("options") or []
+    if step["type"] == "scale5":
+        opts = step.get("labels") or ["1", "2", "3", "4", "5"]
+    try:
+        idx = int(idx_raw)
+        value = opts[idx] if idx < len(opts) else opts[0]
+    except Exception:
+        value = opts[0] if opts else idx_raw
+    answers = _survey_store_answer(uid, kind, code, value, base_answers=answers)
+    await _advance_survey(query.bot, uid, kind, code, answers)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("svskip:"))
+async def on_survey_skip(query: CallbackQuery) -> None:
+    parts = (query.data or "").split(":")
+    if len(parts) != 3:
+        await query.answer()
+        return
+    _, kind, code = parts
+    uid = query.from_user.id
+    survey = _get_survey(uid, kind, statuses={"sent"})
+    if not survey:
+        await query.answer()
+        return
+    answers = survey.get("answers") or {}
+    intro_id = answers.pop("_intro_msg", None)
+    try:
+        msg_id = survey.get("message_id")
+        if msg_id:
+            await query.bot.delete_message(query.message.chat.id, msg_id)
+    except Exception:
+        pass
+    if intro_id:
+        try:
+            await query.bot.delete_message(query.message.chat.id, intro_id)
+        except Exception:
+            pass
+    answers = _survey_store_answer(uid, kind, code, "Пропустить", base_answers=answers)
+    await _advance_survey(query.bot, uid, kind, code, answers)
+    await query.answer("Пропущено")
+
+
+@router.message(F.text, ~F.text.regexp(r"^/"))
+async def on_survey_text(message: Message, state: FSMContext) -> None:
+    uid = message.from_user.id if message.from_user else None
+    if uid is None:
+        return
+    survey = _active_survey(uid)
+    if not survey:
+        # fall back to основная анкета
+        await on_text_answers(message, state)
+        return
+    current = survey.get("current_step")
+    step = _survey_step(survey["kind"], current) if current else None
+    if not step or step["type"] not in {"text", "text_optional"}:
+        return
+    answers = survey.get("answers") or {}
+    intro_id = answers.pop("_intro_msg", None)
+    try:
+        msg_id = survey.get("message_id")
+        if msg_id:
+            await message.bot.delete_message(message.chat.id, msg_id)
+    except Exception:
+        pass
+    if intro_id:
+        try:
+            await message.bot.delete_message(message.chat.id, intro_id)
+        except Exception:
+            pass
+    text = (message.text or "").strip()
+    answers = _survey_store_answer(uid, survey["kind"], current, text, base_answers=answers)
+    await _advance_survey(message.bot, uid, survey["kind"], current, answers)
 
 
 async def _agg_checks(uids: list[int], since: Optional[datetime] = None) -> dict[int, dict[str, Any]]:
@@ -1004,6 +1551,101 @@ async def on_beta_sleepers(message: Message) -> None:
     await message.answer("<b>Слиперы</b>\n" + "\n".join(lines))
 
 
+async def _bulk_send_survey(kind: str, message: Message) -> None:
+    if not _is_admin(message):
+        await message.answer("Нет доступа")
+        return
+    rows = get_activity_rows()
+    now = now_utc()
+    sent = 0
+    for row in rows:
+        uid = row["uid"]
+        if uid not in _approved_uids():
+            continue
+        if _get_survey(uid, kind, statuses={"sent", "answered"}):
+            continue
+        first_start = row["first_start_at"]
+        first_dt = None
+        if isinstance(first_start, str):
+            try:
+                first_dt = datetime.fromisoformat(first_start)
+            except Exception:
+                first_dt = None
+        elif isinstance(first_start, datetime):
+            first_dt = first_start
+        if first_dt is None:
+            continue
+        delay_h = SURVEY_MID_DELAY_HOURS if kind == "mid" else SURVEY_FINAL_DELAY_HOURS
+        if (now - first_dt).total_seconds() >= delay_h * 3600:
+            await _start_survey(message.bot, uid, kind)
+            sent += 1
+    await message.answer(f"Опрос {kind}: отправлено {sent}")
+
+
+@router.message(Command("survey_mid"))
+async def cmd_survey_mid(message: Message) -> None:
+    await _bulk_send_survey("mid", message)
+
+
+@router.message(Command("survey_final"))
+async def cmd_survey_final(message: Message) -> None:
+    await _bulk_send_survey("final", message)
+
+
+@router.message(Command("survey_user"))
+async def cmd_survey_user(message: Message) -> None:
+    if not _is_admin(message):
+        await message.answer("Нет доступа")
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 3:
+        await message.answer("Формат: /survey_user mid|final <uid>")
+        return
+    _, kind, uid_raw = parts
+    if kind not in {"mid", "final"}:
+        await message.answer("Укажите mid или final")
+        return
+    try:
+        uid = int(uid_raw)
+    except ValueError:
+        await message.answer("uid должен быть числом")
+        return
+    started = await _start_survey(message.bot, uid, kind)
+    if started:
+        await message.answer(f"Опрос {kind} отправлен пользователю {uid}.")
+    else:
+        await message.answer("Не удалось отправить опрос (возможно, уже пройден).")
+
+
+@router.message(Command("survey_stats"))
+async def cmd_survey_stats(message: Message) -> None:
+    if not _is_admin(message):
+        await message.answer("Нет доступа")
+        return
+    conn = _get_conn()
+    cur = conn.execute(
+        """
+        SELECT kind, status, COUNT(*) as cnt
+        FROM beta_surveys
+        GROUP BY kind, status
+        """
+    )
+    rows = cur.fetchall()
+    if not rows:
+        await message.answer("Нет данных по опросам.")
+        return
+    summary = {}
+    for row in rows:
+        summary.setdefault(row["kind"], {})[row["status"]] = row["cnt"]
+    lines = []
+    for kind in ("mid", "final"):
+        stats = summary.get(kind, {})
+        lines.append(
+            f"{kind}: sent={stats.get('sent', 0)}, answered={stats.get('answered', 0)}, skipped={stats.get('skipped', 0)}, expired={stats.get('expired', 0)}"
+        )
+    await message.answer("\n".join(lines))
+
+
 @router.message(Command("beta_export"))
 async def on_beta_export(message: Message) -> None:
     if not _is_admin(message):
@@ -1058,20 +1700,21 @@ async def on_beta_export(message: Message) -> None:
                 f"https://t.me/{uname_map.get(uid)}" if uname_map.get(uid) else f"tg://user?id={uid}",
                 total,
                 today,
-                _naive(first_check),
-                _naive(last_check),
-                _naive(act.get("first_start_at")),
+                _as_dt(first_check),
+                _as_dt(last_check),
+                _as_dt(act.get("first_start_at")),
                 bool(act.get("reminder_start_sent")),
                 bool(act.get("reminder_3h_sent")),
-                _naive(act.get("reminder_24_sent_at")),
+                _as_dt(act.get("reminder_24_sent_at")),
                 act.get("reminder_24_count"),
-                _naive(act.get("reminder_48_sent_at")),
+                _as_dt(act.get("reminder_48_sent_at")),
                 bool(act.get("inactive")),
             ]
         )
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         wb.save(tmp.name)
+        wb.close()
         tmp_path = tmp.name
     try:
         await message.answer_document(FSInputFile(tmp_path, filename="beta_stats.xlsx"))
