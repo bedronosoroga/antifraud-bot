@@ -7,7 +7,7 @@ __pycache__/
 .env
 .env.*
 *.local
-alembic/.env
+alembic/env.py
 
 # VS Code
 .vscode/settings.json
